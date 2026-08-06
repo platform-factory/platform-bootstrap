@@ -1,8 +1,11 @@
 # Cloud NAT exists because nodes are private (private_cluster_config in
-# gke.tf) and still need outbound internet — pulling images, hitting
-# package registries, etc. This is the M3 "evolution note" from README
-# arriving early, ahead of the fuller egress-control work (FQDN-based
-# restriction on top of this).
+# gke.tf) and still need outbound internet. As of ADR-0010, image pulls no
+# longer need it — they ride Artifact Registry remote repos over Private
+# Google Access instead (0-foundation/registry.tf), which never leaves
+# Google's network. NAT's one remaining consumer is Argo CD's git traffic
+# to github.com (3-argocd, pulling platform-config) — a single pinhole that
+# M3's FQDN-based egress work will formalize (restrict to exactly that
+# destination) rather than eliminate.
 #
 # Lives in THIS layer, not 1-network, on purpose: it serves nodes
 # specifically, so it should be created and destroyed on the same schedule

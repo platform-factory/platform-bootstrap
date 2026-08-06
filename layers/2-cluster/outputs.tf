@@ -12,6 +12,16 @@ output "region" {
   value       = data.terraform_remote_state.network.outputs.region
 }
 
+output "artifact_registry_base" {
+  description = "Passed through from 0-foundation via 1-network. Consumed by 3-argocd to override the chart's image locations (ADR-0010)."
+  value       = data.terraform_remote_state.network.outputs.artifact_registry_base
+}
+
+output "artifact_registry_repo_ids" {
+  description = "Passed through from 0-foundation via 1-network. Consumed by 3-argocd to override the chart's image locations (ADR-0010)."
+  value       = data.terraform_remote_state.network.outputs.artifact_registry_repo_ids
+}
+
 output "cluster_name" {
   description = "GKE cluster name."
   value       = google_container_cluster.primary.name

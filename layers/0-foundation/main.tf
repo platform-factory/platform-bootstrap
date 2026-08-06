@@ -22,17 +22,18 @@ resource "google_project" "this" {
   deletion_policy = "DELETE"
 }
 
-# Exactly the APIs layer 0 and layer 1 need. Nothing for Argo CD itself
-# (layer 2 talks to the cluster's Kubernetes API, not a GCP API).
+# Exactly the APIs this repo's layers need. Nothing for Argo CD itself
+# (3-argocd talks to the cluster's Kubernetes API, not a GCP API).
 locals {
   services = [
-    "compute.googleapis.com",              # VPC, subnets, firewall rules (layer 1)
-    "container.googleapis.com",            # GKE (layer 1)
-    "iam.googleapis.com",                  # workload identity bindings (layer 1)
+    "compute.googleapis.com",              # VPC, subnets, firewall rules, VPN, NAT (1-network, 2-cluster)
+    "container.googleapis.com",            # GKE (2-cluster)
+    "iam.googleapis.com",                  # workload identity bindings (2-cluster)
     "iamcredentials.googleapis.com",       # short-lived tokens for workload identity / gcloud auth
     "cloudresourcemanager.googleapis.com", # project-level IAM used by the above
     "serviceusage.googleapis.com",         # lets Terraform itself manage enabled services
     "storage.googleapis.com",              # the state bucket below, and GCS generally
+    "artifactregistry.googleapis.com",     # the remote-repo image plane below (registry.tf) — ADR-0010
   ]
 }
 

@@ -104,9 +104,12 @@ terraform init
 terraform apply
 ```
 
-This creates the project, enables the APIs the later layers need, and
-creates the state bucket — all still tracked in **local** state at this
-point. Now switch this layer onto that bucket:
+This creates the project, enables the APIs the later layers need, creates
+the state bucket, and (per ADR-0010) creates the Artifact Registry remote
+repositories the cluster's images will pull through — no extra operator
+input needed for that part, it's all in `registry.tf`. All of it still
+tracked in **local** state at this point. Now switch this layer onto that
+bucket:
 
 ```
 # Uncomment the backend "gcs" block in backend.tf, then:
@@ -247,6 +250,14 @@ configuration should look and behave like one. Concretely: private nodes,
 Cloud NAT, a regional control plane, authorized-networks restricting the
 public endpoint, on-demand (not Spot) nodes, and a VPN-ready network.
 
+- **Image plane (ADR-0010).** All image pulls — Argo CD's own image, dex,
+  redis — go through Artifact Registry remote repositories
+  (`0-foundation/registry.tf`) over Private Google Access, not the public
+  internet. That leaves exactly one internet egress path for the cluster:
+  Argo CD's git traffic to GitHub (pulling `platform-config`) over Cloud
+  NAT. M3's FQDN-based egress work formalizes that single pinhole; it
+  doesn't need to add a new one.
+
 Deliberate exceptions, where this build stops short of full corp-real:
 
 - **No public Argo CD endpoint at all**, not even an authorized-networks-style
@@ -271,7 +282,8 @@ Two questions decide where any new thing belongs:
 | You want to add… | It goes… | Because… |
 |---|---|---|
 | A new VPN peer (an office, a second site) | `1-network/vpn.tf` | Shares the network's lifecycle. At the **second** peer, restructure the singular `peer_*` variables into a `for_each` map (or this repo's first local module) — don't copy-paste `_2` resources. |
-| Cloud NAT | `2-cluster/nat.tf` | It serves nodes, so it's created and destroyed on their schedule. Exists because nodes are private (ADR-0009's corp-real posture); FQDN-based egress restriction on top of it is still M3. |
+| Cloud NAT | `2-cluster/nat.tf` | It serves nodes, so it's created and destroyed on their schedule. Exists because nodes are private (ADR-0009's corp-real posture); as of ADR-0010 its only real consumer is Argo CD's git egress to GitHub, since images no longer need it. |
+| Images from a new external registry | An Artifact Registry remote repo in `0-foundation/registry.tf` | Mirrors the image-plane split (ADR-0010): the cache persists like the network does, not the cluster. Verify the upstream is actually AR-remote-proxyable against the Artifact Registry product docs before adding it — the Terraform schema won't stop you from configuring one that doesn't work. |
 | Another platform-substrate network (hub/egress VPC) | `1-network/network.tf` | Floor-level reachability, persists. Same second-instance rule as VPN peers. |
 | A database, bucket, namespace, or VPC **for a workload/tenant** | **Not this repo.** An XR claim in the team's repo or `systems/`, materialized by Compositions | Terraform ends at layer 0 (claim C-01). Putting it here routes around every approval boundary the platform exists to enforce. |
 | A cluster addon (Kyverno, ESO, external-dns, Gateway…) | `platform-config`, synced by Argo CD | The running platform is GitOps-owned. `3-argocd` installs Argo CD itself and nothing else. |
@@ -301,5 +313,6 @@ This repo is built out in **M1**.
 (`1-network` validated with `enable_vpn` both true and false; `2-cluster`
 validated with a representative `authorized_networks` value). Corp-real
 posture (private nodes, Cloud NAT, regional control plane, authorized
-networks, on-demand nodes) applied per ADR-0009. Not yet applied against
+networks, on-demand nodes) applied per ADR-0009. Image plane moved to
+Artifact Registry remote repositories per ADR-0010. Not yet applied against
 real infrastructure.

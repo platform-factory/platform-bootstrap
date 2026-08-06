@@ -12,6 +12,16 @@ output "region" {
   value       = data.terraform_remote_state.foundation.outputs.region
 }
 
+output "artifact_registry_base" {
+  description = "Passed through from 0-foundation."
+  value       = data.terraform_remote_state.foundation.outputs.artifact_registry_base
+}
+
+output "artifact_registry_repo_ids" {
+  description = "Passed through from 0-foundation."
+  value       = data.terraform_remote_state.foundation.outputs.artifact_registry_repo_ids
+}
+
 output "network_name" {
   description = "VPC name. Consumed by 2-cluster's google_container_cluster."
   value       = google_compute_network.vpc.name

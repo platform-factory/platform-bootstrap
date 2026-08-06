@@ -1,3 +1,48 @@
+# ADR-0010: image pulls ride Artifact Registry remote repos over Private
+# Google Access instead of the public internet — nodes are private
+# (2-cluster) and this keeps image pulls off Cloud NAT entirely (see
+# nat.tf's comment in 2-cluster). The chart itself, by contrast, is fetched
+# by Terraform from the operator's laptop when `helm_release` runs, not by
+# the cluster — so chart-repo (argoproj.github.io) egress is not a cluster
+# concern and isn't rerouted here.
+#
+# Repository paths below preserve the chart's own upstream path structure
+# exactly (see each comment) — only the host+first-segment changes, so
+# these pull the identical images the chart would otherwise pull directly.
+# Version pins (global.image.tag, dex.image.tag, ...) are untouched; only
+# .repository keys are overridden.
+locals {
+  ar_base     = data.terraform_remote_state.cluster.outputs.artifact_registry_base
+  ar_repo_ids = data.terraform_remote_state.cluster.outputs.artifact_registry_repo_ids
+
+  image_overrides = {
+    # was quay.io/argoproj/argocd — global.image.repository applies to
+    # every Argo CD component (server, repo-server, controllers, ...)
+    # that doesn't set its own image.repository.
+    global = {
+      image = {
+        repository = "${local.ar_base}/${local.ar_repo_ids.quay_io}/argoproj/argocd"
+      }
+    }
+
+    # was ghcr.io/dexidp/dex
+    dex = {
+      image = {
+        repository = "${local.ar_base}/${local.ar_repo_ids.ghcr_io}/dexidp/dex"
+      }
+    }
+
+    # was ecr-public.aws.com/docker/library/redis (an alias for the same
+    # AWS ECR Public Gallery service Google's own docs list as
+    # public.ecr.aws — see 0-foundation/registry.tf's comment)
+    redis = {
+      image = {
+        repository = "${local.ar_base}/${local.ar_repo_ids.ecr_public}/docker/library/redis"
+      }
+    }
+  }
+}
+
 # The root (app-of-apps) Application, rendered through the chart's
 # extraObjects value rather than a separate kubernetes_manifest resource.
 #
@@ -58,12 +103,14 @@ resource "helm_release" "argocd" {
   namespace        = var.argocd_namespace
   create_namespace = true
 
-  # Kept minimal on purpose: the only override this layer needs is the root
-  # Application. Everything else about how Argo CD itself runs is a later
-  # decision, not layer 0's to make.
+  # Kept minimal on purpose: the root Application and the ADR-0010 image
+  # overrides above are the only overrides this layer needs. Everything
+  # else about how Argo CD itself runs is a later decision, not layer 0's
+  # to make.
   values = [
-    yamlencode({
-      extraObjects = [local.root_application]
-    })
+    yamlencode(merge(
+      local.image_overrides,
+      { extraObjects = [local.root_application] }
+    ))
   ]
 }

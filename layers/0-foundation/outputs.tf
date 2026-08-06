@@ -17,3 +17,20 @@ output "region" {
   description = "Region passed through to later layers so it's set in exactly one place."
   value       = var.region
 }
+
+output "artifact_registry_base" {
+  description = "Base path for this project's Artifact Registry Docker repos: \"<region>-docker.pkg.dev/<project_id>\". Prepend one of artifact_registry_repo_ids and the upstream's own image path to get a pullable reference — see 3-argocd's argocd.tf for a worked example."
+  value       = "${var.region}-docker.pkg.dev/${google_project.this.project_id}"
+}
+
+output "artifact_registry_repo_ids" {
+  description = "Map of upstream name to its Artifact Registry remote repository id (registry.tf)."
+  value = {
+    docker_hub      = google_artifact_registry_repository.docker_hub.repository_id
+    quay_io         = google_artifact_registry_repository.quay_io.repository_id
+    ghcr_io         = google_artifact_registry_repository.ghcr_io.repository_id
+    ecr_public      = google_artifact_registry_repository.ecr_public.repository_id
+    registry_k8s_io = google_artifact_registry_repository.registry_k8s_io.repository_id
+    xpkg_upbound_io = google_artifact_registry_repository.xpkg_upbound_io.repository_id
+  }
+}
