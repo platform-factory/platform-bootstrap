@@ -12,8 +12,10 @@ Three things are true about a reference build like this one:
 
 1. **Most of the platform shouldn't be Terraform's problem.** Namespaces,
    workloads, Gateway routes, policies, secrets wiring — all of that changes
-   far more often than a VPC does, and it belongs to whoever owns
-   `platform-config`, synced continuously by Argo CD. Terraform's job is to
+   far more often than a VPC does, and it lives in the GitOps repos
+   (`platform-config` and friends), where CODEOWNERS assigns ownership
+   per path — security can own the policy folders while platform owns the
+   Compositions — all synced continuously by Argo CD. Terraform's job is to
    get *just enough* running that Argo CD can take over: a project, a
    network, a cluster, and Argo CD itself. That's it. Hence "layer 0" —
    everything above it is a different system's job.
