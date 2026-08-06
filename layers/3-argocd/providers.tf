@@ -1,13 +1,13 @@
-# This layer reads 1-cluster's state only — not foundation's directly.
-# 1-cluster already passed project_id/region through from foundation, so
-# each layer here depends on just its immediate predecessor, not the whole
-# chain.
+# This layer reads 2-cluster's state only — not 1-network's or foundation's
+# directly. 2-cluster already passed project_id/region through (which it in
+# turn got from 1-network, which got them from foundation), so each layer
+# here depends on just its immediate predecessor, not the whole chain.
 data "terraform_remote_state" "cluster" {
   backend = "gcs"
 
   config = {
     bucket = local.tfstate_bucket
-    prefix = "1-cluster"
+    prefix = "2-cluster"
   }
 }
 

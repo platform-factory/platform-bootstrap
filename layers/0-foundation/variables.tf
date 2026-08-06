@@ -29,7 +29,7 @@ variable "folder_id" {
 }
 
 variable "region" {
-  description = "Default region for regional resources created in this and later layers (the state bucket here; the VPC subnet and GKE cluster in 1-cluster)."
+  description = "Default region for regional resources created in this and later layers (the state bucket here; the VPC subnet and VPN gear in 1-network; the GKE cluster in 2-cluster)."
   type        = string
   default     = "us-central1"
 }

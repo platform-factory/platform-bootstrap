@@ -31,6 +31,6 @@ terraform {
   }
 
   backend "gcs" {
-    prefix = "2-argocd"
+    prefix = "3-argocd"
   }
 }

@@ -49,9 +49,11 @@ resource "google_project_service" "this" {
   disable_on_destroy = false
 }
 
-# State bucket for layers 1 and 2. Created here (not by hand) so the bucket
-# is itself reproducible, but it lives in the layer that's cheap to keep —
-# tearing down 1-cluster never touches this.
+# State bucket for every later layer. Created here (not by hand) so the
+# bucket is itself reproducible, but it lives in the layer that's cheap to
+# keep — tearing down 2-cluster (and 3-argocd with it) never touches this.
+# 1-network also persists (see its README section) but that's a design
+# choice about the network, not a property of this bucket.
 resource "google_storage_bucket" "tfstate" {
   name     = local.tfstate_bucket
   project  = google_project.this.project_id

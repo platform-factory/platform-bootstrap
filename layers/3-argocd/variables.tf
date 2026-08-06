@@ -1,5 +1,5 @@
 variable "project_id" {
-  description = "Same project id set in 0-foundation's terraform.tfvars. Used only to locate 1-cluster's state bucket (see locals.tf) — same reason 1-cluster takes it. Everything else is read from .outputs."
+  description = "Same project id set in 0-foundation's terraform.tfvars. Used only to locate 2-cluster's state bucket (see locals.tf) — same reason every layer above foundation takes it. Everything else is read from .outputs."
   type        = string
   default     = "platform-factory-ref"
 }

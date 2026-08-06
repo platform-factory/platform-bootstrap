@@ -1,5 +1,5 @@
 variable "project_id" {
-  description = "Same project id set in 0-foundation's terraform.tfvars. The only reason this layer takes it as a raw input at all: Terraform's GCS backend can't be parameterized by another layer's output, so this is needed to locate foundation's state bucket before anything else (project id, region, ...) can be read from it. Everything downstream reads from .outputs, not from this variable."
+  description = "Same project id set in 0-foundation's terraform.tfvars. The only reason this layer takes it as a raw input at all: Terraform's GCS backend can't be parameterized by another layer's output, so this is needed to locate 1-network's state bucket before anything else (project id, region, network name, ...) can be read from it. Everything downstream reads from .outputs, not from this variable."
   type        = string
   default     = "platform-factory-ref"
 }
@@ -11,27 +11,9 @@ variable "zone" {
 }
 
 variable "cluster_name" {
-  description = "Name of the GKE cluster. Cluster identity belongs to this layer, not to foundation."
+  description = "Name of the GKE cluster. Cluster identity belongs to this layer, not to 1-network or foundation — the VPC can outlive many clusters built on top of it."
   type        = string
   default     = "platform-factory-ref"
-}
-
-variable "subnet_cidr" {
-  description = "Primary IP range for the subnet (node IPs)."
-  type        = string
-  default     = "10.10.0.0/20"
-}
-
-variable "pods_cidr" {
-  description = "Secondary IP range for pod IPs (VPC-native / alias IP cluster)."
-  type        = string
-  default     = "10.20.0.0/16"
-}
-
-variable "services_cidr" {
-  description = "Secondary IP range for Kubernetes Service IPs (VPC-native / alias IP cluster)."
-  type        = string
-  default     = "10.30.0.0/20"
 }
 
 variable "machine_type" {

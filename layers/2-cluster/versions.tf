@@ -15,6 +15,6 @@ terraform {
   # hardcoded here, so this file has no project-specific value in it. See
   # README for the exact init command.
   backend "gcs" {
-    prefix = "1-cluster"
+    prefix = "2-cluster"
   }
 }
