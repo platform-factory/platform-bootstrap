@@ -1,0 +1,7 @@
+# Usually nothing to put here. project_id defaults to the same value as
+# 0-foundation ("platform-factory-ref") — copy to terraform.tfvars ONLY if
+# you overrode project_id in 0-foundation's tfvars (e.g. because the default
+# was already taken), and set the same value here so this layer can find
+# foundation's state bucket.
+
+# project_id = "platform-factory-ref"
