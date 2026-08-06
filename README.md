@@ -43,8 +43,8 @@ That's the reasoning behind four layers instead of one Terraform root:
 | Layer | Owns | Cost to leave running | Torn down between sessions? |
 |---|---|---|---|
 | `0-foundation` | GCP project, enabled APIs, the Terraform state bucket | ~$0 | No — stays up |
-| `1-network` | VPC, subnet, VPN gateway/tunnels/BGP to the peer network | ~$0 idle (VPN tunnels have a small hourly cost once enabled) | No — stays up |
-| `2-cluster` | The zonal GKE cluster and its node pool | Real (nodes running) | Yes |
+| `1-network` | VPC, subnet, baseline firewall, VPN gateway/tunnels/BGP to the peer network | ~$0 idle (VPN tunnels have a small hourly cost once enabled) | No — stays up |
+| `2-cluster` | The regional GKE cluster (private nodes, Cloud NAT) and its node pool | ~$0.50/hr while it exists (regional control-plane fee + on-demand nodes) | Yes |
 | `3-argocd` | Argo CD itself, running on the cluster | Free (rides on 2-cluster) | Yes, alongside 2-cluster |
 
 Each layer is applied and destroyed independently, with its own Terraform
@@ -87,6 +87,9 @@ of reaching back more than one hop — see each layer's `providers.tf`.
   gcloud auth application-default login
   ```
 - A GCP billing account you can link a new project to.
+- Your current public IP, for `2-cluster`'s `authorized_networks` (the
+  cluster's control-plane endpoint rejects everyone until you list at least
+  one CIDR): `curl -s ifconfig.me`.
 
 ## Runbook: bootstrap from nothing
 
@@ -136,6 +139,11 @@ subnet. See **VPN** below for turning the tunnel on.
 
 ```
 cd ../2-cluster
+cp terraform.tfvars.example terraform.tfvars
+# edit terraform.tfvars: set authorized_networks to your current public IP
+# as a /32 (curl -s ifconfig.me) — required, no default. Without it the
+# cluster's public control-plane endpoint accepts connections from no one,
+# including you.
 terraform init -backend-config="bucket=<same bucket name>"
 terraform apply
 ```
@@ -190,18 +198,21 @@ the home/corp side can reach pods and Services, not just node IPs. Run
 `terraform output vpn_gateway_ips` after applying to get the two
 Google-side public IPs to configure as peer addresses on the UniFi gateway.
 
-**Evolution note:** nodes are on public IPs today — no Cloud NAT, no
-private-nodes configuration. That arrives with the egress-control work
-(M3), and Cloud NAT will live in `2-cluster`, not here: it serves nodes, so
-it should be created and destroyed on the same schedule they are, not
-persist with the network.
+**Evolution note:** nodes are private with Cloud NAT for egress (both in
+`2-cluster` — see its comments), but NAT today allows all outbound traffic
+indiscriminately. FQDN-based egress restriction on top of this NAT arrives
+with the fuller M3 egress-control work; this VPN section only covers the
+inbound side (the site-to-site connection), which is done.
 
 ## Teardown (cost control between sessions)
 
+The regional control-plane fee plus three on-demand `e2-standard-4` nodes
+runs roughly **$0.50/hr** while `2-cluster` exists — real money if left
+running, still small in absolute terms because of the rhythm below.
 Destroy in the reverse order you applied, and stop at `2-cluster` —
 `1-network` and `0-foundation` both stay up on purpose (the VPN connection
 in particular is exactly the thing that shouldn't be rebuilt every session
-— see "Why" above):
+— see "Why" above) and cost close to **$0** idle:
 
 ```
 cd layers/3-argocd
@@ -227,6 +238,25 @@ is GitOps's job, synced by Argo CD from that repo, not applied by
 `terraform apply` here. That split is the point of layer 0: get just enough
 running that GitOps can take over, then stop.
 
+## Posture
+
+This build is configured like a normal corporate environment, at minimal
+scale — per ADR-0009 in the design-seed repo: mock a real corp environment
+as much as possible over cost, since no scale is needed but the
+configuration should look and behave like one. Concretely: private nodes,
+Cloud NAT, a regional control plane, authorized-networks restricting the
+public endpoint, on-demand (not Spot) nodes, and a VPN-ready network.
+
+Deliberate exceptions, where this build stops short of full corp-real:
+
+- **No public Argo CD endpoint at all**, not even an authorized-networks-style
+  restriction — `3-argocd` doesn't expose one yet. A real corp environment
+  would put one behind SSO/an identity-aware proxy, not a bare public
+  Service; that's follow-on work, not a gap this build papers over.
+- **Egress isn't locked down.** Cloud NAT allows all outbound traffic
+  indiscriminately today. FQDN-based egress restriction is the M3
+  egress-control work, deliberately not this milestone's job.
+
 ## Where does my change go?
 
 Two questions decide where any new thing belongs:
@@ -241,7 +271,7 @@ Two questions decide where any new thing belongs:
 | You want to add… | It goes… | Because… |
 |---|---|---|
 | A new VPN peer (an office, a second site) | `1-network/vpn.tf` | Shares the network's lifecycle. At the **second** peer, restructure the singular `peer_*` variables into a `for_each` map (or this repo's first local module) — don't copy-paste `_2` resources. |
-| Cloud NAT | `2-cluster/nat.tf` | It serves nodes, so it's created and destroyed on their schedule. Arrives with the private-nodes/egress work. |
+| Cloud NAT | `2-cluster/nat.tf` | It serves nodes, so it's created and destroyed on their schedule. Exists because nodes are private (ADR-0009's corp-real posture); FQDN-based egress restriction on top of it is still M3. |
 | Another platform-substrate network (hub/egress VPC) | `1-network/network.tf` | Floor-level reachability, persists. Same second-instance rule as VPN peers. |
 | A database, bucket, namespace, or VPC **for a workload/tenant** | **Not this repo.** An XR claim in the team's repo or `systems/`, materialized by Compositions | Terraform ends at layer 0 (claim C-01). Putting it here routes around every approval boundary the platform exists to enforce. |
 | A cluster addon (Kyverno, ESO, external-dns, Gateway…) | `platform-config`, synced by Argo CD | The running platform is GitOps-owned. `3-argocd` installs Argo CD itself and nothing else. |
@@ -268,5 +298,8 @@ This repo is built out in **M1**.
 
 **Status:** M1 in progress — layer 0 (this repo) authored: `0-foundation`,
 `1-network`, `2-cluster`, `3-argocd` all written and `terraform validate`-clean
-(`1-network` validated both with `enable_vpn` true and false). Not yet
-applied against real infrastructure.
+(`1-network` validated with `enable_vpn` both true and false; `2-cluster`
+validated with a representative `authorized_networks` value). Corp-real
+posture (private nodes, Cloud NAT, regional control plane, authorized
+networks, on-demand nodes) applied per ADR-0009. Not yet applied against
+real infrastructure.

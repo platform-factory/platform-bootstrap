@@ -17,6 +17,12 @@ resource "google_compute_subnetwork" "subnet" {
   region        = data.terraform_remote_state.foundation.outputs.region
   ip_cidr_range = var.subnet_cidr
 
+  # Corp-standard, and required regardless: 2-cluster's nodes are private
+  # (private_cluster_config) and need this to reach Google APIs (container
+  # registry, Cloud Logging/Monitoring, ...) without it counting as leaving
+  # the network — no external IP needed for that traffic.
+  private_ip_google_access = true
+
   # VPC-native (alias IP) clusters need their own secondary ranges for pod
   # and Service IPs — this is what makes the cluster VPC-native instead of
   # routes-based, and what 2-cluster's ip_allocation_policy points at (by

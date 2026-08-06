@@ -18,7 +18,7 @@ output "cluster_name" {
 }
 
 output "cluster_location" {
-  description = "GKE cluster location (the zone, for this zonal cluster)."
+  description = "GKE cluster location (the region, for this regional cluster)."
   value       = google_container_cluster.primary.location
 }
 
