@@ -34,3 +34,8 @@ output "artifact_registry_repo_ids" {
     xpkg_upbound_io = google_artifact_registry_repository.xpkg_upbound_io.repository_id
   }
 }
+
+output "gke_node_service_account_email" {
+  description = "Email of the dedicated GKE node service account (iam.tf). Consumed by 2-cluster's node_config.service_account, via 1-network's passthrough."
+  value       = google_service_account.gke_nodes.email
+}

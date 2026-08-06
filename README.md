@@ -257,6 +257,13 @@ public endpoint, on-demand (not Spot) nodes, and a VPN-ready network.
   Argo CD's git traffic to GitHub (pulling `platform-config`) over Cloud
   NAT. M3's FQDN-based egress work formalizes that single pinhole; it
   doesn't need to add a new one.
+- **Dedicated node identity.** Nodes run as a purpose-built service account
+  (`0-foundation/iam.tf`), never the default Compute Engine service
+  account — least-privilege (exactly `container.defaultNodeServiceAccount`
+  plus `artifactregistry.reader` for the image plane above), which also
+  happens to be what makes this work at all under an org that disables
+  automatic IAM grants for default service accounts (true here — this
+  project sits under a Google Workspace org).
 
 Deliberate exceptions, where this build stops short of full corp-real:
 

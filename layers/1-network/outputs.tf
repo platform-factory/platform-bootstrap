@@ -22,6 +22,11 @@ output "artifact_registry_repo_ids" {
   value       = data.terraform_remote_state.foundation.outputs.artifact_registry_repo_ids
 }
 
+output "gke_node_service_account_email" {
+  description = "Passed through from 0-foundation. Consumed by 2-cluster's node_config.service_account."
+  value       = data.terraform_remote_state.foundation.outputs.gke_node_service_account_email
+}
+
 output "network_name" {
   description = "VPC name. Consumed by 2-cluster's google_container_cluster."
   value       = google_compute_network.vpc.name

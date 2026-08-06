@@ -96,6 +96,14 @@ resource "google_container_node_pool" "primary" {
   node_config {
     machine_type = var.machine_type
 
+    # The dedicated node identity from 0-foundation/iam.tf — not the
+    # default Compute Engine service account. That SA carries exactly
+    # roles/container.defaultNodeServiceAccount (logging/monitoring/
+    # autoscaling metrics) and roles/artifactregistry.reader (ADR-0010
+    # image pulls); see iam.tf for why the default SA isn't good enough
+    # here (org policy can leave it with no roles at all).
+    service_account = data.terraform_remote_state.network.outputs.gke_node_service_account_email
+
     # On-demand by default (var.use_spot_nodes = false) — corp-real per
     # ADR-0009, not optimized for minimum cost. See the variable's
     # description for the trade-off if you flip it.
@@ -110,10 +118,13 @@ resource "google_container_node_pool" "primary" {
       enable_integrity_monitoring = true
     }
 
-    # Broad node scope is safe here specifically because workload identity
-    # (above) is what actually gates pod-level GCP access — pods don't
-    # inherit the node's scope, so this isn't the node-level "everything"
-    # access it would be without workload identity turned on.
+    # Scope stays broad (cloud-platform) rather than narrowed — safe now
+    # for two separate reasons, not one: workload identity (above) is what
+    # actually gates pod-level GCP access, since pods don't inherit the
+    # node's scope; and for the node's OWN access, the real ceiling is
+    # service_account's IAM roles above, not this OAuth scope — a broad
+    # scope on a least-privilege service account can't grant more than
+    # that service account actually has.
     oauth_scopes = [
       "https://www.googleapis.com/auth/cloud-platform",
     ]
