@@ -225,6 +225,26 @@ is GitOps's job, synced by Argo CD from that repo, not applied by
 `terraform apply` here. That split is the point of layer 0: get just enough
 running that GitOps can take over, then stop.
 
+## Where does my change go?
+
+Two questions decide where any new thing belongs:
+
+1. **Which lifecycle does it share?** Persists between sessions → `0-foundation`
+   or `1-network`. Dies with the cluster → `2-cluster` or `3-argocd`.
+2. **Is it platform floor, or a product of the platform?** Only the floor
+   belongs in this repo at all. Anything a team or workload consumes arrives
+   through the paved road (Crossplane claims via `platform-config`), never
+   through `terraform apply` here.
+
+| You want to add… | It goes… | Because… |
+|---|---|---|
+| A new VPN peer (an office, a second site) | `1-network/vpn.tf` | Shares the network's lifecycle. At the **second** peer, restructure the singular `peer_*` variables into a `for_each` map (or this repo's first local module) — don't copy-paste `_2` resources. |
+| Cloud NAT | `2-cluster/nat.tf` | It serves nodes, so it's created and destroyed on their schedule. Arrives with the private-nodes/egress work. |
+| Another platform-substrate network (hub/egress VPC) | `1-network/network.tf` | Floor-level reachability, persists. Same second-instance rule as VPN peers. |
+| A database, bucket, namespace, or VPC **for a workload/tenant** | **Not this repo.** An XR claim in the team's repo or `systems/`, materialized by Compositions | Terraform ends at layer 0 (claim C-01). Putting it here routes around every approval boundary the platform exists to enforce. |
+| A cluster addon (Kyverno, ESO, external-dns, Gateway…) | `platform-config`, synced by Argo CD | The running platform is GitOps-owned. `3-argocd` installs Argo CD itself and nothing else. |
+| Argo CD's own configuration | `platform-config` once it has content; `3-argocd` values only if Argo can't boot without it | Keep layer 0 minimal — it should never need touching to change how the platform behaves. |
+
 ## Modules
 
 There are no local Terraform modules in this repo. Nothing repeats enough
