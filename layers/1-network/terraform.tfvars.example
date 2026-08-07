@@ -1,0 +1,12 @@
+# Usually nothing needed here for the base VPC. project_id defaults to the
+# same value as 0-foundation ("platform-factory-ref") — copy to
+# terraform.tfvars ONLY if you overrode project_id in 0-foundation's
+# tfvars, and set the same value here so this layer can find foundation's
+# state bucket.
+
+# project_id = "platform-factory-ref"
+
+# --- VPN — only needed once the peer (home/corp) gateway is ready. ---------
+# enable_vpn        = true
+# peer_gateway_ip   = "203.0.113.10"   # the UniFi gateway's WAN IP
+# vpn_shared_secret = "generate-a-real-one-do-not-commit-this"

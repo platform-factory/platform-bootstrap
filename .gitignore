@@ -1,0 +1,25 @@
+# Real variable values (billing account id, project id overrides, etc).
+# Each layer ships a terraform.tfvars.example with placeholders instead.
+terraform.tfvars
+*.auto.tfvars
+*.auto.tfvars.json
+
+# Local backend-config files (bucket name is project-specific; see README).
+backend.hcl
+*.backend.hcl
+
+# Terraform working files. (.terraform.lock.hcl is NOT ignored — it's the
+# dependency lock file and is meant to be committed.)
+.terraform/
+
+# State — layer 0 starts on local state before migrating to GCS; never commit
+# state either way, local or a stray pull of remote state.
+*.tfstate
+*.tfstate.*
+
+# Crash logs.
+crash.log
+crash.*.log
+
+# Plan output files, if anyone saves one locally.
+*.tfplan

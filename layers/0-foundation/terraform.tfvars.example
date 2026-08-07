@@ -1,0 +1,8 @@
+# Copy to terraform.tfvars (gitignored) and fill in real values.
+# terraform.tfvars is never committed — see .gitignore.
+
+billing_account = "XXXXXX-XXXXXX-XXXXXX"
+
+# Only needed if the default in variables.tf ("platform-factory-ref") is
+# already taken — project ids are globally unique across all of GCP.
+# project_id = "platform-factory-ref"
