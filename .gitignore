@@ -21,5 +21,7 @@ backend.hcl
 crash.log
 crash.*.log
 
-# Plan output files, if anyone saves one locally.
+# Plan output files, if anyone saves one locally — both the extension
+# convention and the bare `terraform plan -out=tfplan` convention.
 *.tfplan
+tfplan
