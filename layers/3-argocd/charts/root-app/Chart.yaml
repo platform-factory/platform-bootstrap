@@ -1,0 +1,14 @@
+apiVersion: v2
+name: root-app
+description: >-
+  The Argo CD root (app-of-apps) Application, as its own tiny chart. Exists
+  as a SEPARATE Helm release from the argo-cd chart because that chart
+  templates its CRDs rather than shipping them in the special crds/
+  directory, and Helm validates every rendered object against the cluster's
+  API before applying any of them — so a release containing both the
+  templated Application CRD and an Application instance fails validation on
+  a fresh cluster ("ensure CRDs are installed first"). A second release is
+  validated at its own install time, after the first has the CRDs live.
+  Full reasoning in ../../argocd.tf.
+type: application
+version: 0.1.0

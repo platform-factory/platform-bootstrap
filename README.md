@@ -67,17 +67,22 @@ of reaching back more than one hop — see each layer's `providers.tf`.
   region through, plus the network's own facts). `3-argocd` reads
   `2-cluster`'s outputs (which pass project id and region through again).
   Each layer depends only on its immediate predecessor, never two hops back.
-- **The root Application.** `3-argocd` renders the Argo CD "root"
-  (app-of-apps) Application through the `argo-cd` chart's `extraObjects`
-  value, not a separate `kubernetes_manifest` resource. A `kubernetes_manifest`
-  for an `Application` object gets validated against the live cluster's CRD
-  schema at **plan** time — and on a true first apply of this layer, that
-  CRD doesn't exist until this very `helm_release` installs it. `extraObjects`
-  avoids the chicken-and-egg because Helm installs a chart's CRDs before its
-  templates in the same release, so the CRD and the root Application land
-  together. Automated sync on that root Application is **off** for now:
-  `platform-config` is still an empty scaffold, so there's nothing to sync
-  and no reason to hand Argo CD unattended write access to the cluster yet.
+- **The root Application.** `3-argocd` installs the Argo CD "root"
+  (app-of-apps) Application as a **second, tiny Helm release** (the in-repo
+  chart `layers/3-argocd/charts/root-app`), after the argo-cd release it
+  `depends_on`. Two more obvious designs both hit the same chicken-and-egg
+  — the `Application` CRD doesn't exist until the argo-cd release installs
+  it: a `kubernetes_manifest` resource fails at **plan** time (it validates
+  against the live cluster's CRD schema before anything runs), and the
+  argo-cd chart's `extraObjects` value fails at **apply** time — learned
+  from a real failed apply, because that chart *templates* its CRDs rather
+  than shipping them in Helm's special `crds/` directory, and Helm
+  validates every rendered object against the cluster before applying any
+  of them. A second release is validated at its own install time, when the
+  CRDs are already live. Automated sync on the root Application is **off**
+  for now: `platform-config` is still an empty scaffold, so there's nothing
+  to sync and no reason to hand Argo CD unattended write access to the
+  cluster yet.
 
 ## Prerequisites
 
