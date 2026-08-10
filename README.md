@@ -95,11 +95,23 @@ of reaching back more than one hop — see each layer's `providers.tf`.
 
 ### 1. `0-foundation` — local state, then migrate to GCS
 
+> **Already-bootstrapped infra?** The committed `backend.tf` assumes the
+> state bucket exists (it does, once anyone has completed this step — the
+> normal case for every clone after the first). Skip the dance below and
+> just run
+> `terraform init -backend-config="bucket=<project_id>-tfstate"`.
+> The two-phase flow here is ONLY for a true from-nothing bootstrap.
+
+On a genuinely empty slate, the state bucket this layer's backend points
+at is itself created by this layer — so the first apply must run on local
+state:
+
 ```
 cd layers/0-foundation
 cp terraform.tfvars.example terraform.tfvars   # skip if terraform.tfvars already exists
 # edit terraform.tfvars: set billing_account (required); override project_id
 # only if "platform-factory-ref" is already taken — project ids are global.
+# COMMENT OUT the backend "gcs" block in backend.tf (genesis only), then:
 terraform init
 terraform apply
 ```
@@ -108,11 +120,11 @@ This creates the project, enables the APIs the later layers need, creates
 the state bucket, and (per ADR-0010) creates the Artifact Registry remote
 repositories the cluster's images will pull through — no extra operator
 input needed for that part, it's all in `registry.tf`. All of it still
-tracked in **local** state at this point. Now switch this layer onto that
-bucket:
+tracked in **local** state at this point. Now restore the backend block
+and switch this layer onto the bucket it just created:
 
 ```
-# Uncomment the backend "gcs" block in backend.tf, then:
+# Un-comment the backend "gcs" block in backend.tf again, then:
 terraform init -backend-config="bucket=$(terraform output -raw tfstate_bucket)" -migrate-state
 ```
 
