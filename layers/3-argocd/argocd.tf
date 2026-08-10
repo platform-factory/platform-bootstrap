@@ -43,51 +43,29 @@ locals {
   }
 }
 
-# The root (app-of-apps) Application, rendered through the chart's
-# extraObjects value rather than a separate kubernetes_manifest resource.
+# The root (app-of-apps) Application rides in as a SECOND helm_release of
+# a tiny in-repo chart (charts/root-app), not as a kubernetes_manifest and
+# not through the argo-cd chart's extraObjects value. Both of those hit
+# the same chicken-and-egg — the Application CRD doesn't exist until the
+# argo-cd release installs it — at two different moments:
 #
-# Why: a kubernetes_manifest resource for an Application CRD is validated
-# against the live API server's schema at PLAN time. On a genuinely first
-# apply of this layer, that CRD doesn't exist until THIS helm_release
-# installs it — so a separate kubernetes_manifest would fail plan with "no
-# matches for kind Application" before the chart that creates the CRD has
-# ever run. extraObjects sidesteps this because Helm installs a chart's
-# crds/ directory before its templates within the same release, so the CRD
-# and this object land in the same `helm install`, in working order.
-locals {
-  root_application = {
-    apiVersion = "argoproj.io/v1alpha1"
-    kind       = "Application"
-    metadata = {
-      name      = "root"
-      namespace = var.argocd_namespace
-    }
-    spec = merge(
-      {
-        project = "default"
-        source = {
-          repoURL        = var.root_app_repo_url
-          path           = var.root_app_path
-          targetRevision = var.root_app_target_revision
-        }
-        destination = {
-          server    = "https://kubernetes.default.svc"
-          namespace = "default"
-        }
-      },
-      # syncPolicy.automated is entirely OMITTED (not just empty) when
-      # disabled, matching Argo CD's own default of manual-sync-if-absent.
-      var.root_app_automated_sync ? {
-        syncPolicy = {
-          automated = {
-            prune    = true
-            selfHeal = true
-          }
-        }
-      } : {}
-    )
-  }
-}
+#   - kubernetes_manifest validates against the live API server's schema
+#     at PLAN time, so a first plan of this layer dies with "no matches
+#     for kind Application" before anything has run at all.
+#   - extraObjects moves the failure to APPLY time but doesn't remove it.
+#     This was learned from a real failed apply (2026-08-07), not docs:
+#     the design assumed Helm installs a chart's crds/ directory before
+#     its templates, but the argo-cd chart TEMPLATES its CRDs (gated by
+#     its crds.install value) rather than using the special crds/
+#     directory — and Helm builds and validates every rendered object
+#     against the cluster's API before applying any of them, so one
+#     release containing both a templated CRD and an instance of it fails
+#     with "ensure CRDs are installed first" on a fresh cluster.
+#
+# A second release sidesteps both: its objects are validated at ITS
+# install time, which depends_on places after the argo-cd release has the
+# CRDs live. The teardown/rebuild rhythm (C-02) re-tests this ordering on
+# every session start.
 
 resource "helm_release" "argocd" {
   name       = "argo-cd"
@@ -103,14 +81,40 @@ resource "helm_release" "argocd" {
   namespace        = var.argocd_namespace
   create_namespace = true
 
-  # Kept minimal on purpose: the root Application and the ADR-0010 image
-  # overrides above are the only overrides this layer needs. Everything
-  # else about how Argo CD itself runs is a later decision, not layer 0's
-  # to make.
+  # Kept minimal on purpose: the ADR-0010 image overrides are the only
+  # values this release needs. Everything else about how Argo CD itself
+  # runs is a later decision, not layer 0's to make. (The root Application
+  # is deliberately NOT in this release — see the comment block above.)
+  values = [yamlencode(local.image_overrides)]
+}
+
+resource "helm_release" "root_app" {
+  name      = "root-app"
+  chart     = "${path.module}/charts/root-app"
+  namespace = var.argocd_namespace
+
   values = [
-    yamlencode(merge(
-      local.image_overrides,
-      { extraObjects = [local.root_application] }
-    ))
+    yamlencode({
+      name      = "root"
+      namespace = var.argocd_namespace
+      project   = "default"
+      source = {
+        repoURL        = var.root_app_repo_url
+        path           = var.root_app_path
+        targetRevision = var.root_app_target_revision
+      }
+      destination = {
+        server    = "https://kubernetes.default.svc"
+        namespace = "default"
+      }
+      # The chart omits spec.syncPolicy entirely when this is false,
+      # matching Argo CD's own default of manual-sync-if-absent.
+      automatedSync = var.root_app_automated_sync
+    })
   ]
+
+  # The ordering that makes the whole two-release design work: by the time
+  # this release is validated and installed, the argo-cd release above has
+  # already put the Application CRD on the cluster.
+  depends_on = [helm_release.argocd]
 }

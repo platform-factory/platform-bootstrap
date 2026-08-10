@@ -1,0 +1,15 @@
+# Defaults document the shape; the real values arrive from Terraform
+# (layers/3-argocd/argocd.tf), which owns them as variables.
+name: root
+namespace: argocd
+project: default
+source:
+  repoURL: ""
+  path: "."
+  targetRevision: main
+destination:
+  server: https://kubernetes.default.svc
+  namespace: default
+# When false, spec.syncPolicy is omitted entirely (not rendered empty),
+# matching Argo CD's own default of manual-sync-if-absent.
+automatedSync: false
