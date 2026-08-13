@@ -248,6 +248,45 @@ in `2-cluster`, then the same in `3-argocd`. `0-foundation` and `1-network`
 never need to be touched again unless you're tearing the whole reference
 build down for good.
 
+### `scripts/cycle.sh` — the same thing, scripted and timed
+
+The manual sequence above is the explanation; `scripts/cycle.sh` is how it
+actually gets run. It does exactly what the two `terraform destroy` calls
+and the two `terraform apply` calls do, in the same order, plus three
+things the manual version can't:
+
+```
+./scripts/cycle.sh down        # destroy 3-argocd, then 2-cluster
+./scripts/cycle.sh up          # apply 2-cluster, then 3-argocd, then verify
+./scripts/cycle.sh cycle 3     # three full down+up cycles, back to back
+./scripts/cycle.sh status      # what's live right now
+```
+
+1. **It enforces the persist/disposable boundary in code.** The script
+   cannot address `0-foundation` or `1-network` at all — naming either one
+   is a hard error, not a warning. A teardown script that *could* destroy
+   the VPC would quietly undo the reason this repo has four layers.
+2. **It measures instead of accommodating.** Every terraform call runs with
+   `-input=false`, so anything that would have prompted a human fails the
+   run rather than waiting on one. That's deliberate: the number this is
+   collecting is "manual interventions, target zero," and a script that
+   politely waits for a human would report zero while hiding one.
+3. **It defines "up" as the platform being back, not terraform exiting 0.**
+   After both applies it fetches cluster credentials and waits for Argo CD's
+   root Application to report `Synced`/`Healthy` against `platform-config`.
+
+Each phase is appended to `scripts/cycle-results.tsv` (timestamp, cycle,
+phase, layer, seconds, exit code, note) — wall-clock down and up, per layer,
+across every run. That file is the evidence, so it's committed rather than
+gitignored.
+
+> **Note:** with `root_app_automated_sync = false` (the current default in
+> `3-argocd`), a rebuilt root Application sits `OutOfSync` until someone
+> syncs it by hand, and the verify step will fail by design rather than wait
+> it out. Set `root_app_automated_sync = true` if you want the cycle to
+> complete unattended — which is also the only configuration under which
+> "rebuilt without manual steps" can honestly be claimed.
+
 ## What Terraform deliberately does NOT manage
 
 Once `3-argocd` finishes, Terraform's job here is over. Everything from

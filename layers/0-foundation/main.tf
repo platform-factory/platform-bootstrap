@@ -34,6 +34,29 @@ locals {
     "serviceusage.googleapis.com",         # lets Terraform itself manage enabled services
     "storage.googleapis.com",              # the state bucket below, and GCS generally
     "artifactregistry.googleapis.com",     # the remote-repo image plane below (registry.tf) — ADR-0010
+
+    # Added 2026-08-13, after discovering the cluster had been discarding
+    # every log it produced since it was created. GKE is configured with
+    # loggingService = logging.googleapis.com/kubernetes and SYSTEM_COMPONENTS
+    # + WORKLOADS enabled, and the node SA holds logging.logWriter via
+    # container.defaultNodeServiceAccount (iam.tf) — but with the API off at
+    # the project level the writes go nowhere, silently. Nothing errors; the
+    # logs simply do not exist.
+    #
+    # Why this wasn't caught: creating the cluster auto-enables a pile of
+    # APIs as dependencies of container.googleapis.com (monitoring, autoscaling,
+    # gkebackup, telemetry, ...), and monitoring.googleapis.com is among them
+    # — so metrics worked and it looked like observability was fine.
+    # logging.googleapis.com is NOT auto-enabled, which is the whole trap:
+    # the half that got enabled for free hid the half that didn't.
+    #
+    # monitoring is listed explicitly even though GKE turns it on anyway.
+    # An API this platform depends on should be declared by the layer that
+    # owns dependencies, not inherited as a side effect of creating a cluster
+    # — otherwise a rebuild's observability rests on undocumented GKE
+    # behavior. Same "assume nothing exists" logic as the rest of this list.
+    "logging.googleapis.com",              # cluster + NAT logs; the C-23 egress evidence path
+    "monitoring.googleapis.com",           # GKE metrics + managed Prometheus (auto-enabled by GKE; pinned here on purpose)
   ]
 }
 
