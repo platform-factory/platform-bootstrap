@@ -92,9 +92,57 @@ of reaching back more than one hop — see each layer's `providers.tf`.
   gcloud auth application-default login
   ```
 - A GCP billing account you can link a new project to.
-- Your current public IP, for `2-cluster`'s `authorized_networks` (the
-  cluster's control-plane endpoint rejects everyone until you list at least
-  one CIDR): `curl -s ifconfig.me`.
+- Nothing about where you are sitting. The cluster's control plane is
+  reached by its DNS-based endpoint and authorized by IAM, so there is no
+  address to look up and no allowlist to keep current (ADR-0011).
+
+## Access: how you reach things
+
+Two planes, deliberately separate, with no shared failure mode.
+
+**Control plane (`kubectl`, Terraform).** The cluster's DNS-based endpoint,
+authorized by IAM. Nothing to configure and nothing to keep current:
+
+```
+gcloud container clusters get-credentials <cluster> --region <region> --dns-endpoint
+```
+
+**Data plane (apps, SSH, databases on private IPs).** The jump box in
+`1-network` runs a Tailscale subnet router advertising the VPC's private
+ranges, so a private address is reachable directly — `psql -h 10.x.x.x` — from
+any device on the tailnet.
+
+**Break-glass.** IAP TCP forwarding to the jump box. It needs no egress, so it
+works when NAT is down, the tailnet is broken, or a Tailscale key has expired:
+
+```
+gcloud compute ssh $(terraform -chdir=layers/1-network output -raw jumpbox_name) \
+  --tunnel-through-iap \
+  --zone $(terraform -chdir=layers/1-network output -raw jumpbox_zone)
+```
+
+This needs `roles/iap.tunnelResourceAccessor` on the project. The jump box has
+no external IP; ingress is allowed only from `35.235.240.0/20`, which is
+Google's IAP fleet, and only after IAP has checked the caller's IAM identity.
+
+### One-time: join the jump box to the tailnet
+
+The startup script installs Tailscale and enables kernel forwarding, but does
+not run `tailscale up` — joining needs an auth key, and putting one in instance
+metadata would write a credential into Terraform state and into the metadata
+server. So the join is a manual step, once per jump box, over IAP:
+
+```
+terraform -chdir=layers/1-network output -raw jumpbox_tailscale_up_command
+```
+
+SSH in with the break-glass command above and run what that prints. Then
+**approve the advertised routes in the Tailscale admin console** — they are
+advertised but unusable until approved. Enable Tailnet Lock while you are
+there (ADR-0011 names it as the mitigation for the one real risk of a SaaS
+coordination server).
+
+The node stays joined across reboots. Only a rebuilt jump box needs this again.
 
 ## Runbook: bootstrap from nothing
 
@@ -160,10 +208,10 @@ subnet. See **VPN** below for turning the tunnel on.
 ```
 cd ../2-cluster
 cp terraform.tfvars.example terraform.tfvars
-# edit terraform.tfvars: set authorized_networks to your current public IP
-# as a /32 (curl -s ifconfig.me) — required, no default. Without it the
-# cluster's public control-plane endpoint accepts connections from no one,
-# including you.
+# No edit required for access. The control plane exposes only its DNS-based
+# endpoint (IP endpoints are disabled) and IAM decides who gets in, so there
+# is no operator IP to supply. Edit node_locations only if the apply fails
+# with GCE_STOCKOUT.
 terraform init -backend-config="bucket=<same bucket name>"
 terraform apply
 ```
@@ -373,9 +421,9 @@ This repo is built out in **M1**.
 
 **Status:** M1 in progress — layer 0 (this repo) authored: `0-foundation`,
 `1-network`, `2-cluster`, `3-argocd` all written and `terraform validate`-clean
-(`1-network` validated with `enable_vpn` both true and false; `2-cluster`
-validated with a representative `authorized_networks` value). Corp-real
-posture (private nodes, Cloud NAT, regional control plane, authorized
-networks, on-demand nodes) applied per ADR-0009. Image plane moved to
+(`1-network` validated with `enable_vpn` both true and false). Corp-real
+posture (private nodes, Cloud NAT, regional control plane, on-demand nodes)
+applied per ADR-0009; control-plane access is identity-gated via the GKE
+DNS-based endpoint rather than an IP allowlist, per ADR-0011. Image plane moved to
 Artifact Registry remote repositories per ADR-0010. Not yet applied against
 real infrastructure.

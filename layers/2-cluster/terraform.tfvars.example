@@ -6,15 +6,9 @@
 
 # project_id = "platform-factory-ref"
 
-# authorized_networks: REQUIRED, no default — the cluster's public
-# control-plane endpoint rejects everyone until you list CIDRs here. Find
-# your current public IP (curl -s ifconfig.me) and use it as a /32:
-authorized_networks = [
-  {
-    cidr_block   = "203.0.113.5/32" # replace with `curl -s ifconfig.me`/32
-    display_name = "operator-workstation"
-  }
-]
+# authorized_networks is gone. The control plane is reached by its
+# DNS-based endpoint and gated by IAM, so there is no allowlist to keep
+# current and no operator IP to supply here at all.
 
 # node_locations: leave unset to let GKE pick zones — but if the apply
 # fails with GCE_STOCKOUT ("zone ... does not have enough resources"),
