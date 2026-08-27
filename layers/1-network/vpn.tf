@@ -11,13 +11,6 @@
 # over each tunnel so routes propagate automatically instead of being
 # hand-maintained as static routes.
 
-locals {
-  # What we advertise to the peer over BGP: the subnet's primary range plus
-  # both secondary ranges, so pod and Service IPs are reachable from the
-  # peer network too, not just node IPs.
-  vpn_advertised_ranges = [var.subnet_cidr, var.pods_cidr, var.services_cidr]
-}
-
 resource "google_compute_ha_vpn_gateway" "this" {
   count = var.enable_vpn ? 1 : 0
 
@@ -94,12 +87,12 @@ resource "google_compute_router_peer" "tunnel" {
   peer_asn        = var.peer_asn
 
   # CUSTOM instead of the ALL_SUBNETS default group: advertise exactly the
-  # ranges in local.vpn_advertised_ranges, not "every subnet in this VPC"
+  # ranges in local.private_ranges, not "every subnet in this VPC"
   # (there's only one today, but this stays correct if that changes).
   advertise_mode = "CUSTOM"
 
   dynamic "advertised_ip_ranges" {
-    for_each = local.vpn_advertised_ranges
+    for_each = local.private_ranges
     content {
       range = advertised_ip_ranges.value
     }

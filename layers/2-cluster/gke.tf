@@ -33,32 +33,58 @@ resource "google_container_cluster" "primary" {
   # Private nodes (no public IPs) is the other half of the corp-real
   # posture, alongside the regional control plane above. Nodes reach
   # Google APIs via private_ip_google_access on the subnet (1-network) and
-  # the internet via Cloud NAT (nat.tf, in this layer, not 1-network — see
-  # its comment for why). enable_private_endpoint = false: the control
-  # plane keeps a public endpoint too, gated by master_authorized_networks_config
-  # below, rather than going fully private — see that block's comment for
-  # why.
+  # the internet via Cloud NAT, which lives in 1-network as of ADR-0011 — it
+  # moved out of this layer when the jump box gave it a second consumer on a
+  # persistent schedule, and a persistent resource cannot depend on a
+  # disposable one.
+  #
+  # enable_private_endpoint = true is NOT a leftover from the pre-ADR-0011
+  # posture — it is what GKE itself reports once control_plane_endpoints_config
+  # below disables the IP endpoints, and it has to be stated here to match.
+  # Left at the old `false`, the very next plan reads `true -> false`, and
+  # applying it would REOPEN the public IP endpoint, silently undoing the
+  # identity-gated posture. Caught on 2026-08-20 in the plan that moved NAT
+  # out of this layer; see the build log. ip_endpoints_config is the
+  # authoritative control — this flag only agrees with it, and reachability
+  # is the DNS endpoint only.
   private_cluster_config {
     enable_private_nodes    = true
-    enable_private_endpoint = false
+    enable_private_endpoint = true
     master_ipv4_cidr_block  = var.master_ipv4_cidr_block
   }
 
-  # Corp pattern: restrict who can even attempt to authenticate to the
-  # public endpoint, not just what they can do once authenticated. No
-  # default for var.authorized_networks — this only applies once an
-  # operator has actually supplied their own IP. Once the site-to-site VPN
-  # in 1-network is live, this could move to the private endpoint over the
-  # tunnel instead of keeping a public one open at all.
-  master_authorized_networks_config {
-    dynamic "cidr_blocks" {
-      for_each = var.authorized_networks
-      content {
-        cidr_block   = cidr_blocks.value.cidr_block
-        display_name = cidr_blocks.value.display_name
-      }
+  # Control plane access is identity-gated, not location-gated. The
+  # DNS-based endpoint is a public name resolved through Google's API front
+  # door and authorized by IAM, so it works from any network with no
+  # tunnel, no bastion, and no allowlist entry. Google names it the
+  # preferred control plane access path.
+  #
+  # This is also the bootstrap path. 3-argocd needs Helm access to the API
+  # server before anything exists in the cluster, so the control plane has
+  # to be reachable before the in-cluster access plane (Tailscale operator)
+  # is installed. A tailnet whose subnet router lives in the cluster cannot
+  # bootstrap itself.
+  #
+  # Replaces master_authorized_networks_config, which used to gate a public
+  # IP endpoint by source address. Pinning the operator's dynamic residential
+  # /32 broke access twice in five days and killed a cycle.sh run mid-flight;
+  # ADR-0011 has the full reasoning, including why finishing the site-to-site
+  # VPN would have made that worse rather than better.
+  control_plane_endpoints_config {
+    dns_endpoint_config {
+      allow_external_traffic = true
+    }
+
+    # The IP endpoints are off, so this cluster has exactly one way in and
+    # it is identity-gated. Verified reachable over DNS before this was
+    # flipped (kubectl get nodes, and 3-argocd refreshing both helm
+    # releases) — the ordering matters, because turning this off while the
+    # DNS path was unproven would have locked the operator out.
+    ip_endpoints_config {
+      enabled = false
     }
   }
+
 
   # Kubernetes service accounts impersonate GCP service accounts through
   # this pool instead of nodes carrying long-lived service account keys.

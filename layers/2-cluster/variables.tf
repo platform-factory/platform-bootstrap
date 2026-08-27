@@ -52,10 +52,3 @@ variable "master_ipv4_cidr_block" {
   default     = "172.16.0.0/28"
 }
 
-variable "authorized_networks" {
-  description = "CIDR blocks allowed to reach the cluster's public control-plane endpoint — the corp pattern of restricting who can even attempt to authenticate, not just what they can do once in. No default on purpose: you must supply at least your own IP (see terraform.tfvars.example — run `curl -s ifconfig.me` and add it as a /32) before applying. Once the site-to-site VPN in 1-network is live, access can move to the private endpoint over the tunnel instead of the public one."
-  type = list(object({
-    cidr_block   = string
-    display_name = string
-  }))
-}

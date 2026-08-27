@@ -73,3 +73,20 @@ variable "vpn_shared_secret" {
   default     = null
   nullable    = true
 }
+
+# --- jump box (jumpbox.tf) --------------------------------------------------
+# Always created, unlike the VPN. Per ADR-0011 this is the VPC's operator
+# reachability rather than an optional extra, and it is the persist-layer home
+# for the Tailscale subnet router.
+
+variable "jumpbox_zone" {
+  description = "Zone for the jump box. Single-zone on purpose: this is a break-glass and routing host, not a highly available service, and a zonal outage is survivable by recreating it (the startup script plus one `tailscale up` is the whole build)."
+  type        = string
+  default     = "us-central1-a"
+}
+
+variable "jumpbox_machine_type" {
+  description = "Machine size for the jump box. e2-micro is inside Google's always-free tier in us-central1 and is ample for a subnet router; raise it only if the box starts doing real work."
+  type        = string
+  default     = "e2-micro"
+}
