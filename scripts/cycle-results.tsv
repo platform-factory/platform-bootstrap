@@ -8,3 +8,6 @@ timestamp_utc	cycle	phase	layer	seconds	exit_code	note
 2026-08-18T16:58:33Z	1	up	3-argocd	87	0	
 2026-08-18T16:58:47Z	1	up	verify	12	0	root Application Synced/Healthy
 2026-08-18T16:58:47Z	1	up	TOTAL	133	0	
+2026-08-27T20:11:37Z	2	down	3-argocd	55	0	
+2026-08-27T20:22:27Z	2	down	2-cluster	649	0	
+2026-08-27T20:22:27Z	2	down	TOTAL	708	0	

@@ -55,6 +55,11 @@ of reaching back more than one hop — see each layer's `providers.tf`.
 
 ## Mechanism
 
+An editable diagram of everything below, as deployed, lives in
+[`docs/architecture/`](docs/architecture/) (`.drawio` source plus a rendered
+PNG).
+
+
 - **State.** All four layers' state lives in one GCS bucket
   (`<project_id>-tfstate`, created by `0-foundation`), separated by prefix
   (`0-foundation`, `1-network`, `2-cluster`, `3-argocd`). `0-foundation` is
@@ -320,20 +325,30 @@ things the manual version can't:
    collecting is "manual interventions, target zero," and a script that
    politely waits for a human would report zero while hiding one.
 3. **It defines "up" as the platform being back, not terraform exiting 0.**
-   After both applies it fetches cluster credentials and waits for Argo CD's
-   root Application to report `Synced`/`Healthy` against `platform-config`.
+   After both applies it fetches cluster credentials and waits for *every*
+   Argo CD Application — the root and each child it creates from
+   `platform-config` — to report `Synced`/`Healthy`. Every one, not just
+   the root: Argo CD stopped counting child Applications toward a parent's
+   health in 1.8, so a root-only check can pass while Crossplane underneath
+   it is still failing.
 
 Each phase is appended to `scripts/cycle-results.tsv` (timestamp, cycle,
 phase, layer, seconds, exit code, note) — wall-clock down and up, per layer,
 across every run. That file is the evidence, so it's committed rather than
 gitignored.
 
-> **Note:** with `root_app_automated_sync = false` (the current default in
-> `3-argocd`), a rebuilt root Application sits `OutOfSync` until someone
-> syncs it by hand, and the verify step will fail by design rather than wait
-> it out. Set `root_app_automated_sync = true` if you want the cycle to
-> complete unattended — which is also the only configuration under which
-> "rebuilt without manual steps" can honestly be claimed.
+Cycle numbers come from that file, not from you: `down` opens cycle
+*last + 1*, `up` continues the last cycle if it has a `down` but no `up`
+yet (so a teardown one evening and a rebuild the next morning are one
+cycle, and re-running `up` after a failure stays in the same cycle), and
+`cycle N` numbers each pass consecutively from there. Don't edit the
+numbers by hand.
+
+> **Note:** `root_app_automated_sync` defaults to `true` (since 2026-08-13).
+> With it `false`, a rebuilt root Application sits `OutOfSync` until someone
+> syncs it by hand and the verify step fails by design rather than wait it
+> out — which is the honest result, since "rebuilt without manual steps" can
+> only be claimed under automated sync.
 
 ## What Terraform deliberately does NOT manage
 
