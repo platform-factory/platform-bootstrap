@@ -26,12 +26,23 @@
 #   ./scripts/cycle.sh cycle [N]       # N full down+up cycles (default 1)
 #   ./scripts/cycle.sh status          # what's live right now
 #
+# Cycle numbers are read from cycle-results.tsv, never typed: `down` starts
+# cycle (last + 1), `up` continues the last cycle if it has a down but no up
+# yet (a teardown one evening and a rebuild the next morning are one cycle),
+# and `cycle N` numbers each pass consecutively from there. Before this, the
+# standalone commands hard-coded cycle 1, so a second teardown was recorded
+# under the same label as the first — three cycles would have read as one.
+#
 # Env overrides:
 #   PROJECT_ID  (default: platform-factory-ref)
 #   BUCKET      (default: ${PROJECT_ID}-tfstate)
 #   ARGOCD_NS   (default: argocd)
-#   SYNC_TIMEOUT_SECONDS (default: 600) — how long "up" waits for the root
-#                        Application to report Synced/Healthy
+#   SYNC_TIMEOUT_SECONDS (default: 900) — how long "up" waits for every
+#                        Argo CD Application to report Synced/Healthy. 900
+#                        rather than 600 because the surface now includes
+#                        Crossplane and its provider packages, whose first
+#                        pull through the Artifact Registry remotes is a
+#                        cold fetch from upstream on Google's side.
 
 set -euo pipefail
 
@@ -42,7 +53,7 @@ RESULTS_FILE="${REPO_ROOT}/scripts/cycle-results.tsv"
 PROJECT_ID="${PROJECT_ID:-platform-factory-ref}"
 BUCKET="${BUCKET:-${PROJECT_ID}-tfstate}"
 ARGOCD_NS="${ARGOCD_NS:-argocd}"
-SYNC_TIMEOUT_SECONDS="${SYNC_TIMEOUT_SECONDS:-600}"
+SYNC_TIMEOUT_SECONDS="${SYNC_TIMEOUT_SECONDS:-900}"
 
 # The only two layers this script is allowed to name. Anything else is a bug
 # or a typo, and either way it must not reach terraform.
@@ -88,6 +99,36 @@ record() {
     >> "$RESULTS_FILE"
 }
 
+# The highest cycle number recorded so far (0 if there is no results file).
+last_cycle_number() {
+  [[ -f "$RESULTS_FILE" ]] || { echo 0; return; }
+  awk -F'\t' 'NR > 1 && $2 ~ /^[0-9]+$/ && ($2 + 0) > max { max = $2 + 0 } END { print max + 0 }' \
+    "$RESULTS_FILE"
+}
+
+next_cycle_number() {
+  echo $(( $(last_cycle_number) + 1 ))
+}
+
+# An `up` belongs to the last cycle if that cycle recorded a down TOTAL but
+# no up TOTAL yet — which also covers re-running `up` after a failed one,
+# since a failed up never writes its TOTAL row. Anything else (first-ever
+# bring-up, or an up after a completed cycle) starts a new number.
+cycle_for_up() {
+  local last
+  last="$(last_cycle_number)"
+  if (( last > 0 )); then
+    local downs ups
+    downs="$(awk -F'\t' -v c="$last" '($2 + 0) == c && $3 == "down" && $4 == "TOTAL" { n++ } END { print n + 0 }' "$RESULTS_FILE")"
+    ups="$(awk -F'\t' -v c="$last" '($2 + 0) == c && $3 == "up" && $4 == "TOTAL" { n++ } END { print n + 0 }' "$RESULTS_FILE")"
+    if (( downs > 0 && ups == 0 )); then
+      echo "$last"
+      return
+    fi
+  fi
+  echo $(( last + 1 ))
+}
+
 # .terraform/ is gitignored and disposable, so re-init every time rather than
 # assuming a working directory survived the last run.
 init_layer() {
@@ -115,11 +156,17 @@ run_layer() {
 }
 
 # "Rebuilt" has to mean the platform is back, not that terraform exited 0.
-# The honest finish line for C-02/C-04 is Argo CD's root Application
-# reporting Synced and Healthy against platform-config.
+# The honest finish line for C-02/C-04 is every Argo CD Application —
+# the root and each child it creates from platform-config — reporting
+# Synced and Healthy. Checking only the root would be a confident wrong
+# answer: Argo CD dropped Application health from its built-in checks in
+# 1.8, so unless 3-argocd's argocd-cm customization restores it, a root
+# app reads Healthy while the Crossplane app under it is still failing.
+# Listing every Application here means the harness reports the truth even
+# if that customization ever regresses, and names the app that is stuck.
 verify_up() {
   local cycle_n="$1"
-  log "verify: waiting for root Application to report Synced/Healthy"
+  log "verify: waiting for every Application in ${ARGOCD_NS} to report Synced/Healthy"
 
   # Read the cluster's identity from state rather than guessing it. No
   # fallback defaults on purpose: a wrong guess here would point kubectl at
@@ -136,28 +183,46 @@ verify_up() {
     --location "$location" --project "$PROJECT_ID" >/dev/null 2>&1 \
     || die "could not fetch cluster credentials for ${cluster} in ${location}"
 
-  local start elapsed sync health
+  local start elapsed apps total ready not_ready
   start=$SECONDS
   while true; do
-    sync="$(kubectl get application root -n "$ARGOCD_NS" -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "")"
-    health="$(kubectl get application root -n "$ARGOCD_NS" -o jsonpath='{.status.health.status}' 2>/dev/null || echo "")"
+    # One line per Application: name<TAB>sync<TAB>health. Empty if the
+    # cluster isn't answering yet or no Application exists.
+    apps="$(kubectl get applications -n "$ARGOCD_NS" \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.sync.status}{"\t"}{.status.health.status}{"\n"}{end}' \
+      2>/dev/null || echo "")"
     elapsed=$(( SECONDS - start ))
 
-    if [[ "$sync" == "Synced" && "$health" == "Healthy" ]]; then
-      record "$cycle_n" "up" "verify" "$elapsed" 0 "root Application Synced/Healthy"
-      printf '    root Application Synced/Healthy after %ss\n' "$elapsed"
+    total=0; ready=0; not_ready=""
+    while IFS=$'\t' read -r name sync health; do
+      [[ -n "$name" ]] || continue
+      total=$(( total + 1 ))
+      if [[ "$sync" == "Synced" && "$health" == "Healthy" ]]; then
+        ready=$(( ready + 1 ))
+      else
+        not_ready="${not_ready}${not_ready:+, }${name}(sync=${sync:-<none>} health=${health:-<none>})"
+      fi
+    done <<< "$apps"
+
+    # The root must be one of them: an empty namespace is "not rebuilt yet",
+    # not "nothing to check".
+    if (( total > 0 && ready == total )) && grep -q $'^root\t' <<< "$apps"; then
+      record "$cycle_n" "up" "verify" "$elapsed" 0 "${ready}/${total} Applications Synced/Healthy"
+      printf '    %s/%s Applications Synced/Healthy after %ss\n' "$ready" "$total" "$elapsed"
       return 0
     fi
 
     if (( elapsed > SYNC_TIMEOUT_SECONDS )); then
-      record "$cycle_n" "up" "verify" "$elapsed" 1 "timeout; sync=${sync:-<none>} health=${health:-<none>}"
-      warn "root Application did not reach Synced/Healthy within ${SYNC_TIMEOUT_SECONDS}s"
-      warn "last seen: sync=${sync:-<none>} health=${health:-<none>}"
-      # Not a hard failure: with root_app_automated_sync = false (the current
-      # default) the root Application will sit OutOfSync until a human syncs
-      # it, which is precisely a C-02 manual intervention worth recording
-      # rather than hiding behind a longer timeout.
-      die "root Application never reached Synced/Healthy — see note above. If root_app_automated_sync is false, this is expected and is the finding."
+      record "$cycle_n" "up" "verify" "$elapsed" 1 "timeout; ${ready}/${total} ready; not ready: ${not_ready:-<no Applications found>}"
+      warn "not every Application reached Synced/Healthy within ${SYNC_TIMEOUT_SECONDS}s (${ready}/${total} ready)"
+      warn "not ready: ${not_ready:-<no Applications found>}"
+      # Not a hard failure in the design sense: with root_app_automated_sync
+      # = false (the default until 2026-08-13) the root Application sits
+      # OutOfSync until a human syncs it, which is precisely a C-02 manual
+      # intervention worth recording rather than hiding behind a longer
+      # timeout. With it true, a timeout here means a child never converged
+      # — the not-ready list above says which one.
+      die "Applications never all reached Synced/Healthy — see note above. If root_app_automated_sync is false, this is expected and is the finding."
     fi
     sleep 10
   done
@@ -202,17 +267,20 @@ main() {
   local cmd="${1:-}"
   case "$cmd" in
     down)
-      preflight; do_down 1 ;;
+      preflight; do_down "$(next_cycle_number)" ;;
     up)
-      preflight; do_up 1 ;;
+      preflight; do_up "$(cycle_for_up)" ;;
     cycle)
       preflight
       local n="${2:-1}"
       [[ "$n" =~ ^[0-9]+$ ]] || die "cycle count must be a number, got '${n}'"
-      for (( i = 1; i <= n; i++ )); do
-        log "======== CYCLE ${i} of ${n} ========"
-        do_down "$i"
-        do_up "$i"
+      local first c
+      first="$(next_cycle_number)"
+      for (( i = 0; i < n; i++ )); do
+        c=$(( first + i ))
+        log "======== CYCLE ${c} ($(( i + 1 )) of ${n}) ========"
+        do_down "$c"
+        do_up "$c"
       done
       log "All ${n} cycle(s) complete. Results: ${RESULTS_FILE}"
       ;;
