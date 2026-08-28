@@ -230,9 +230,11 @@ terraform apply
 ```
 
 Once this finishes, Argo CD is running in the `argocd` namespace with a
-"root" Application already pointed at `platform-config`, sync not yet
-automated. `kubectl get applications -n argocd` (with your kubeconfig
-pointed at the new cluster) should show it.
+"root" Application pointed at `platform-config`'s `apps/` directory, auto-sync
+on (prune and self-heal). Within a few minutes `kubectl get applications -n
+argocd` (with your kubeconfig pointed at the new cluster) should show the
+root plus one child Application per file in that directory, all
+`Synced`/`Healthy`; `scripts/cycle.sh up` waits for exactly that.
 
 ## VPN
 
