@@ -64,9 +64,15 @@ resource "google_artifact_registry_repository" "quay_io" {
   depends_on = [google_project_service.this]
 }
 
-# ghcr.io: Argo CD's dex image comes from here today; Kyverno's images are
-# expected to (M2). Explicitly listed as a supported custom Docker upstream
-# in Google's own remote-overview docs.
+# ghcr.io: Argo CD's dex image comes from here, and so does everything
+# Crossplane — its core image (xpkg.crossplane.io/crossplane/crossplane)
+# and every provider package (xpkg.crossplane.io/crossplane-contrib/*),
+# because xpkg.crossplane.io is a pass-through front for ghcr.io (verified
+# by registry probe 2026-08-11; every M1 image pulled through this remote
+# 2026-08-27). platform-config maps that prefix here with one Crossplane
+# ImageConfig. Kyverno's images are expected to land here too (M2).
+# Explicitly listed as a supported custom Docker upstream in Google's own
+# remote-overview docs.
 resource "google_artifact_registry_repository" "ghcr_io" {
   project       = google_project.this.project_id
   location      = var.region

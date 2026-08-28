@@ -41,6 +41,44 @@ locals {
       }
     }
   }
+
+  # The one piece of Argo CD configuration layer 0 has to own: without it
+  # the app-of-apps in platform-config cannot order its children.
+  #
+  # Argo CD removed Application from its built-in health checks in 1.8, so
+  # by default a parent Application reports Healthy regardless of what its
+  # child Applications are doing. platform-config's root relies on sync
+  # waves between children (Crossplane core before the Crossplane provider
+  # packages, whose kinds don't exist until core is running), and a wave
+  # only gates on the previous wave's *health* — with no health check, the
+  # gate is open and every child is created at once. This Lua script is the
+  # one Argo CD's own docs give for restoring the check
+  # (operator-manual/health, "Argocd App"), verified 2026-08-27; it simply
+  # reports the child's own status.health back up to the parent.
+  #
+  # Belongs here rather than in platform-config because Argo CD reads
+  # argocd-cm at startup and platform-config is what Argo CD *syncs*: a
+  # setting the sync order depends on can't itself arrive by sync.
+  argocd_cm = {
+    configs = {
+      cm = {
+        "resource.customizations.health.argoproj.io_Application" = <<-LUA
+          hs = {}
+          hs.status = "Progressing"
+          hs.message = ""
+          if obj.status ~= nil then
+            if obj.status.health ~= nil then
+              hs.status = obj.status.health.status
+              if obj.status.health.message ~= nil then
+                hs.message = obj.status.health.message
+              end
+            end
+          end
+          return hs
+        LUA
+      }
+    }
+  }
 }
 
 # The root (app-of-apps) Application rides in as a SECOND helm_release of
@@ -81,11 +119,13 @@ resource "helm_release" "argocd" {
   namespace        = var.argocd_namespace
   create_namespace = true
 
-  # Kept minimal on purpose: the ADR-0010 image overrides are the only
-  # values this release needs. Everything else about how Argo CD itself
-  # runs is a later decision, not layer 0's to make. (The root Application
-  # is deliberately NOT in this release — see the comment block above.)
-  values = [yamlencode(local.image_overrides)]
+  # Kept minimal on purpose: the ADR-0010 image overrides, plus the one
+  # argocd-cm entry the app-of-apps ordering depends on (see local.argocd_cm
+  # for why that can't live in platform-config). Everything else about how
+  # Argo CD itself runs is a later decision, not layer 0's to make. (The
+  # root Application is deliberately NOT in this release — see the comment
+  # block above.)
+  values = [yamlencode(local.image_overrides), yamlencode(local.argocd_cm)]
 }
 
 resource "helm_release" "root_app" {

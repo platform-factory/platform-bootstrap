@@ -17,9 +17,9 @@ variable "root_app_repo_url" {
 }
 
 variable "root_app_path" {
-  description = "Path within root_app_repo_url the root Application watches."
+  description = "Path within root_app_repo_url the root Application watches. 'apps' (since 2026-08-27): platform-config keeps one child Application per file in that directory and its component content elsewhere in the repo, so the root only ever applies Application objects — never a stray manifest at the repo root."
   type        = string
-  default     = "."
+  default     = "apps"
 }
 
 variable "root_app_target_revision" {

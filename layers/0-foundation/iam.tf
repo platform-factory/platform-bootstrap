@@ -73,3 +73,30 @@ resource "google_project_iam_member" "gke_nodes_artifact_registry" {
   role    = "roles/artifactregistry.reader"
   member  = "serviceAccount:${google_service_account.gke_nodes.email}"
 }
+
+# Crossplane's package manager pulls provider packages itself — from its
+# own pod, with its own identity — not through kubelet, so the node service
+# account above does nothing for it. Its fetcher (crossplane-runtime
+# pkg/xpkg/fetch.go, verified 2026-08-27) authenticates through
+# go-containerregistry's k8schain, which includes the Google keychain: on a
+# Workload Identity cluster (2-cluster) that resolves to the pod's own
+# Kubernetes service account as a federated principal. This binding grants
+# that principal read access to the Artifact Registry remotes, so the
+# ImageConfig mirror rule in platform-config actually pulls — no pull
+# secret, no Google service account, no key anywhere.
+#
+# The principal identifier format is Google's documented Workload Identity
+# Federation for GKE form (kubernetes-engine/docs/how-to/workload-identity,
+# "Authenticate to Google Cloud APIs from GKE workloads", verified
+# 2026-08-27). The namespace and service account name are the Crossplane
+# chart's defaults: crossplane-system / crossplane. If either changes in
+# platform-config, this binding has to change with it — the coupling is the
+# price of not shipping a credential.
+#
+# Lives in foundation for the same reason the node identity does: identity
+# persists, and this survives every teardown/rebuild cycle unchanged.
+resource "google_project_iam_member" "crossplane_artifact_registry" {
+  project = google_project.this.project_id
+  role    = "roles/artifactregistry.reader"
+  member  = "principal://iam.googleapis.com/projects/${google_project.this.number}/locations/global/workloadIdentityPools/${google_project.this.project_id}.svc.id.goog/subject/ns/crossplane-system/sa/crossplane"
+}
