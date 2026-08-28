@@ -55,8 +55,8 @@ locals {
     # owns dependencies, not inherited as a side effect of creating a cluster
     # — otherwise a rebuild's observability rests on undocumented GKE
     # behavior. Same "assume nothing exists" logic as the rest of this list.
-    "logging.googleapis.com",              # cluster + NAT logs; the C-23 egress evidence path
-    "monitoring.googleapis.com",           # GKE metrics + managed Prometheus (auto-enabled by GKE; pinned here on purpose)
+    "logging.googleapis.com",    # cluster + NAT logs; the C-23 egress evidence path
+    "monitoring.googleapis.com", # GKE metrics + managed Prometheus (auto-enabled by GKE; pinned here on purpose)
   ]
 }
 

@@ -43,8 +43,8 @@ That's the reasoning behind four layers instead of one Terraform root:
 | Layer | Owns | Cost to leave running | Torn down between sessions? |
 |---|---|---|---|
 | `0-foundation` | GCP project, enabled APIs, the Terraform state bucket | ~$0 | No — stays up |
-| `1-network` | VPC, subnet, baseline firewall, VPN gateway/tunnels/BGP to the peer network | ~$0 idle (VPN tunnels have a small hourly cost once enabled) | No — stays up |
-| `2-cluster` | The regional GKE cluster (private nodes, Cloud NAT) and its node pool | ~$0.50/hr while it exists (regional control-plane fee + on-demand nodes) | Yes |
+| `1-network` | VPC, subnet, baseline firewall, Cloud NAT, the Tailscale subnet-router jump box, and a gated VPN gateway/tunnels/BGP to a peer network | A few dollars a month (the always-on e2-micro jump box; an idle NAT gateway is ~$0, and the VPN adds a small hourly cost only if enabled) | No — stays up |
+| `2-cluster` | The regional GKE cluster (private nodes, DNS-based control-plane endpoint) and its node pool | ~$0.50/hr while it exists (regional control-plane fee + on-demand nodes) | Yes |
 | `3-argocd` | Argo CD itself, running on the cluster | Free (rides on 2-cluster) | Yes, alongside 2-cluster |
 
 Each layer is applied and destroyed independently, with its own Terraform
@@ -273,11 +273,15 @@ the home/corp side can reach pods and Services, not just node IPs. Run
 `terraform output vpn_gateway_ips` after applying to get the two
 Google-side public IPs to configure as peer addresses on the UniFi gateway.
 
-**Evolution note:** nodes are private with Cloud NAT for egress (both in
-`2-cluster` — see its comments), but NAT today allows all outbound traffic
-indiscriminately. FQDN-based egress restriction on top of this NAT arrives
-with the fuller M3 egress-control work; this VPN section only covers the
-inbound side (the site-to-site connection), which is done.
+**Evolution note:** nodes are private (`2-cluster`) and egress through Cloud
+NAT, which lives here in `1-network/nat.tf` — it moved out of `2-cluster` on
+2026-08-20 when the jump box arrived, because a subnet's ranges can only be
+covered by one NAT gateway and the jump box needs egress on the cluster's off
+days. NAT today allows all outbound traffic indiscriminately; FQDN-based
+egress restriction on top of it arrives with the fuller M3 egress-control
+work. This VPN section covers only the inbound site-to-site connection, and
+ADR-0011 superseded it for user access — `enable_vpn` stays false and the
+tailnet carries that traffic instead.
 
 ## Teardown (cost control between sessions)
 
@@ -368,13 +372,20 @@ This build is configured like a normal corporate environment, at minimal
 scale — per ADR-0009 in the design-seed repo: mock a real corp environment
 as much as possible over cost, since no scale is needed but the
 configuration should look and behave like one. Concretely: private nodes,
-Cloud NAT, a regional control plane, authorized-networks restricting the
-public endpoint, on-demand (not Spot) nodes, and a VPN-ready network.
+Cloud NAT, a regional control plane, a control-plane endpoint that is
+identity-gated rather than address-gated (the GKE DNS-based endpoint, per
+ADR-0011 — the `authorized_networks` allowlist was removed, not tightened),
+on-demand (not Spot) nodes, and a Tailscale subnet router for private-range
+access.
 
 - **Image plane (ADR-0010).** All image pulls — Argo CD's own image, dex,
-  redis — go through Artifact Registry remote repositories
-  (`0-foundation/registry.tf`) over Private Google Access, not the public
-  internet. That leaves exactly one internet egress path for the cluster:
+  redis, and (since `platform-config`'s app-of-apps landed) Crossplane's
+  three component images and its provider packages — go through Artifact
+  Registry remote repositories (`0-foundation/registry.tf`) over Private
+  Google Access, not the public internet. Crossplane's package manager pulls
+  with its own pod identity rather than the node's, so `0-foundation/iam.tf`
+  grants `artifactregistry.reader` to its Kubernetes service account
+  directly through Workload Identity — no pull secret, no key. That leaves exactly one internet egress path for the cluster:
   Argo CD's git traffic to GitHub (pulling `platform-config`) over Cloud
   NAT. M3's FQDN-based egress work formalizes that single pinhole; it
   doesn't need to add a new one.
@@ -410,7 +421,7 @@ Two questions decide where any new thing belongs:
 | You want to add… | It goes… | Because… |
 |---|---|---|
 | A new VPN peer (an office, a second site) | `1-network/vpn.tf` | Shares the network's lifecycle. At the **second** peer, restructure the singular `peer_*` variables into a `for_each` map (or this repo's first local module) — don't copy-paste `_2` resources. |
-| Cloud NAT | `2-cluster/nat.tf` | It serves nodes, so it's created and destroyed on their schedule. Exists because nodes are private (ADR-0009's corp-real posture); as of ADR-0010 its only real consumer is Argo CD's git egress to GitHub, since images no longer need it. |
+| Cloud NAT | `1-network/nat.tf` | It serves the whole subnet, not just nodes — the jump box needs egress on days the cluster doesn't exist, and two gateways can't cover the same ranges, so it persists. Exists because nodes are private (ADR-0009's corp-real posture); as of ADR-0010 its only real cluster-side consumer is Argo CD's git egress to GitHub, since images no longer need it. |
 | Images from a new external registry | An Artifact Registry remote repo in `0-foundation/registry.tf` | Mirrors the image-plane split (ADR-0010): the cache persists like the network does, not the cluster. Verify the upstream is actually AR-remote-proxyable against the Artifact Registry product docs before adding it — the Terraform schema won't stop you from configuring one that doesn't work. |
 | Another platform-substrate network (hub/egress VPC) | `1-network/network.tf` | Floor-level reachability, persists. Same second-instance rule as VPN peers. |
 | A database, bucket, namespace, or VPC **for a workload/tenant** | **Not this repo.** An XR claim in the team's repo or `systems/`, materialized by Compositions | Terraform ends at layer 0 (claim C-01). Putting it here routes around every approval boundary the platform exists to enforce. |
@@ -436,11 +447,25 @@ This repo is built out in **M1**.
 
 ## Status
 
-**Status:** M1 in progress — layer 0 (this repo) authored: `0-foundation`,
-`1-network`, `2-cluster`, `3-argocd` all written and `terraform validate`-clean
-(`1-network` validated with `enable_vpn` both true and false). Corp-real
-posture (private nodes, Cloud NAT, regional control plane, on-demand nodes)
-applied per ADR-0009; control-plane access is identity-gated via the GKE
-DNS-based endpoint rather than an IP allowlist, per ADR-0011. Image plane moved to
-Artifact Registry remote repositories per ADR-0010. Not yet applied against
-real infrastructure.
+**Status:** M1 in progress. All four layers are written, `terraform
+validate`-clean (`1-network` validated with `enable_vpn` both true and false),
+and **applied against real infrastructure** — `0-foundation` and `1-network`
+have been live since 2026-08-06 and persist by design, while `2-cluster` and
+`3-argocd` are destroyed and rebuilt between sessions by `scripts/cycle.sh`
+(measured times per phase in `scripts/cycle-results.tsv`). Corp-real posture
+(private nodes, Cloud NAT, regional control plane, on-demand nodes) applied per
+ADR-0009; control-plane access is identity-gated via the GKE DNS-based endpoint
+rather than an IP allowlist, per ADR-0011, with a Tailscale subnet router on the
+jump box carrying private-range access. Image plane moved to Artifact Registry
+remote repositories per ADR-0010 and verified live — a forced pull of a
+never-cached image resolved to a `*.pkg.dev` digest while Cloud NAT logged no
+registry egress at all.
+
+**M1 closed 2026-08-28.** `cycle-results.tsv` holds the three scripted cycles
+C-02 asks for; cycles 2 and 3 ran at **zero manual interventions**, and the
+`2-cluster` rebuild came in at 753s / 755s / 755s across the three. The
+app-of-apps in `platform-config` reached 3/3 Applications Synced/Healthy from
+an empty cluster with no manual ordering, and every image on it — Crossplane,
+its six GCP provider packages, and Argo CD's own — arrived through Artifact
+Registry with zero registry egress in the NAT logs. Grades and the evidence
+behind them are in the design-seed repo's build log (`docs/build-log/`).
