@@ -73,6 +73,13 @@ resource "google_artifact_registry_repository" "quay_io" {
 # ImageConfig. Kyverno's images are expected to land here too (M2).
 # Explicitly listed as a supported custom Docker upstream in Google's own
 # remote-overview docs.
+#
+# There used to be an xpkg.upbound.io remote in this file as well, on the
+# assumption that Crossplane packages would come from Upbound's registry.
+# They don't — every M1 package resolved through this ghcr.io remote — so
+# it was removed 2026-09-02 (build log, C-23: "unnecessary rather than
+# unproven"). Add it back only if a Composition pins an xpkg.upbound.io
+# package, and only with the same upstream check as everything else here.
 resource "google_artifact_registry_repository" "ghcr_io" {
   project       = google_project.this.project_id
   location      = var.region
@@ -133,33 +140,6 @@ resource "google_artifact_registry_repository" "registry_k8s_io" {
     description = "Kubernetes Container Registry"
     common_repository {
       uri = "https://registry.k8s.io"
-    }
-  }
-
-  depends_on = [google_project_service.this]
-}
-
-# xpkg.upbound.io: Crossplane packages (M2), not yet consumed by anything
-# this repo installs. Weaker verification than the repos above — it isn't
-# in Google's documented examples or in a known working issue thread the
-# way quay.io is. Confirmed only that it speaks the standard Docker
-# Registry V2 API (a direct HTTP probe returns the expected
-# docker-distribution-api-version: registry/2.0 header and bearer
-# challenge), which is what Artifact Registry's Docker remote-repo proxy
-# requires — re-verify against a real apply before relying on this one at
-# M2.
-resource "google_artifact_registry_repository" "xpkg_upbound_io" {
-  project       = google_project.this.project_id
-  location      = var.region
-  repository_id = "xpkg-upbound-io"
-  format        = "DOCKER"
-  mode          = "REMOTE_REPOSITORY"
-  description   = "Remote cache of xpkg.upbound.io (not yet consumed; arrives M2 with Crossplane). Verified Docker V2 API-compliant, not verified as an actual working AR remote — recheck at M2."
-
-  remote_repository_config {
-    description = "Upbound package registry (xpkg)"
-    common_repository {
-      uri = "https://xpkg.upbound.io"
     }
   }
 
