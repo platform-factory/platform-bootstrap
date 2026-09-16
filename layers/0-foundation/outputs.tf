@@ -31,7 +31,6 @@ output "artifact_registry_repo_ids" {
     ghcr_io         = google_artifact_registry_repository.ghcr_io.repository_id
     ecr_public      = google_artifact_registry_repository.ecr_public.repository_id
     registry_k8s_io = google_artifact_registry_repository.registry_k8s_io.repository_id
-    xpkg_upbound_io = google_artifact_registry_repository.xpkg_upbound_io.repository_id
   }
 }
 

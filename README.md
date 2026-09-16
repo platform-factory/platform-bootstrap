@@ -84,10 +84,11 @@ PNG).
   than shipping them in Helm's special `crds/` directory, and Helm
   validates every rendered object against the cluster before applying any
   of them. A second release is validated at its own install time, when the
-  CRDs are already live. Automated sync on the root Application is **off**
-  for now: `platform-config` is still an empty scaffold, so there's nothing
-  to sync and no reason to hand Argo CD unattended write access to the
-  cluster yet.
+  CRDs are already live. Automated sync on the root Application is **on**
+  (prune and self-heal, since 2026-08-13): the moment the root Application
+  exists, Argo CD pulls `platform-config`'s `apps/` directory and takes
+  over with no human sync click — which is what lets `scripts/cycle.sh`
+  claim a rebuild happened without manual steps.
 
 ## Prerequisites
 
