@@ -10,3 +10,12 @@
 # enable_vpn        = true
 # peer_gateway_ip   = "203.0.113.10"   # the UniFi gateway's WAN IP
 # vpn_shared_secret = "generate-a-real-one-do-not-commit-this"
+
+# --- Private Services Access (psa.tf) --------------------------------------
+# Defaults (10.60.0.0/16) are clear of every other range in this VPC's plan
+# and of 2-cluster's control-plane /28. Override only if 10.60/16 collides
+# with something on the peer side once enable_vpn = true, and note that the
+# range cannot be shrunk or moved once a Cloud SQL instance sits on it.
+
+# psa_range_address       = "10.60.0.0"
+# psa_range_prefix_length = 16

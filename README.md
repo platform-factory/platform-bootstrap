@@ -236,6 +236,128 @@ argocd` (with your kubeconfig pointed at the new cluster) should show the
 root plus one child Application per file in that directory, all
 `Synced`/`Healthy`; `scripts/cycle.sh up` waits for exactly that.
 
+### 5. M2 — bringing up the paved road on an already-bootstrapped project
+
+M2 adds tenants, a real Cloud SQL database and Google-Group RBAC. None of that
+is reachable by a single `terraform apply`, and the order below is not a
+preference — each step is a hard prerequisite of the one after it. This is the
+consolidated list; the reasoning behind each line lives in the file it touches.
+
+**A. Google Workspace (a Workspace admin, not Terraform).** Nothing on the
+Google side of the platform resolves until these exist. Create the umbrella
+group — the local part must be exactly `gke-security-groups`, GKE requires that
+name — then the team groups, then nest the teams *inside* the umbrella as
+member groups rather than adding individuals:
+
+```
+gcloud identity groups create gke-security-groups@thecloudgeek.io \
+  --organization=thecloudgeek.io --group-display-name="GKE security groups" \
+  --labels=cloudidentity.googleapis.com/groups.discussion_forum
+gcloud identity groups create payments@thecloudgeek.io \
+  --organization=thecloudgeek.io --group-display-name="Payments" \
+  --labels=cloudidentity.googleapis.com/groups.discussion_forum
+gcloud identity groups create checkout@thecloudgeek.io \
+  --organization=thecloudgeek.io --group-display-name="Checkout" \
+  --labels=cloudidentity.googleapis.com/groups.discussion_forum
+
+gcloud identity groups memberships add \
+  --group-email=gke-security-groups@thecloudgeek.io \
+  --member-email=payments@thecloudgeek.io
+gcloud identity groups memberships add \
+  --group-email=gke-security-groups@thecloudgeek.io \
+  --member-email=checkout@thecloudgeek.io
+```
+
+Then, in the Admin console, set **View Members** for *Group Members* on the
+umbrella group **and on each team group**. Without it GKE cannot resolve
+membership at all, and the failure is indistinguishable from the
+`authenticator_groups_config` block being absent — you will re-read Terraform
+that is already correct. Group changes are cached for a few minutes plus
+roughly an hour of credential caching, so do not read a fresh failure as a
+broken binding.
+
+**B. `0-foundation` — the M2 identity and API surface.** Uncomment
+`gke_security_group` in `terraform.tfvars` now that the group exists, then
+apply. This adds the Crossplane provider Google service account, its five
+Workload Identity bindings, its project roles (including the conditioned
+`projectIamAdmin`), `roles/container.clusterViewer` for the umbrella group, and
+the `sqladmin` / `servicenetworking` APIs.
+
+**C. `1-network` — Private Services Access. Do not skip this even though
+`1-network` is a persistent layer.** Two independent reasons: `psa.tf` is what
+a private-IP Cloud SQL instance needs (without it a `DatabaseInstance` sits in
+a `NETWORK_NOT_PEERED` retry loop rather than failing loudly), and this layer
+is where `gke_security_group` is *re-published* to `2-cluster`. `cycle.sh`
+only ever rebuilds `2-cluster` and `3-argocd`, so setting the group in
+foundation and skipping this apply leaves the cluster with no group RBAC and
+no error anywhere.
+
+**D. Rebuild the cluster.** `./scripts/cycle.sh down` then
+`./scripts/cycle.sh up`. The rebuild is what picks up
+`authenticator_groups_config` and the Argo CD XR health checks. `up` now waits
+up to `SYNC_TIMEOUT_SECONDS` (2400) because a Cloud SQL create and the GRANT
+Job are on the critical path.
+
+**E. Re-advertise the tailnet routes.** The PSA range is a fourth entry in
+`private_ranges` and an already-joined jump box does not pick it up:
+
+```
+gcloud compute ssh platform-factory-ref-jumpbox --tunnel-through-iap --zone us-central1-a
+# on the box, run this layer's output verbatim:
+terraform -chdir=layers/1-network output -raw jumpbox_tailscale_up_command
+```
+
+Then **approve the new `10.60.0.0/16` subnet route in the Tailscale admin
+console**. Advertising is not enough; peers cannot use it until it is approved.
+
+**F. Push the `svc-hello` image — and only now.** The Artifact Registry
+repository it pushes to (`.../platform-factory-ref/svc-hello`) is created by
+the System Composition, so it does not exist until the `systems` Application
+has synced `tenants/svc-hello.yaml`. From the `svc-hello` clone:
+
+```
+make login        # once per laptop
+make push         # build + push, tagged with the current commit
+make set-image    # rewrite k8s/deployment.yaml to that tag
+git commit -am 'svc-hello: pin image to <sha>' && git push
+```
+
+The manifest ships with the tag `REPLACE_ME` on purpose, so an unpushed
+checkout cannot be mistaken for a deployable one; the PR check fails if
+`REPLACE_ME` ever reaches `main`.
+
+> **This step is inside a genuine circular dependency, and the first `up` is
+> expected to time out because of it.** `cycle.sh up` waits for *every*
+> `Application` in `argocd` to be `Synced`/`Healthy`, and the tenant's own
+> `Application` — created by the System Composition, so it appears only after
+> wave 4 — cannot be Healthy while its `Deployment` is pulling `REPLACE_ME`.
+> But the registry it pushes to does not exist until that same wave has run.
+> There is no ordering that avoids this on a green-field project; the loop is
+> broken by hand, once.
+>
+> So treat the first M2 bring-up as a bring-up, not as a measured C-02 cycle:
+> run `up`, let it converge as far as the tenant Application, push the image
+> and commit the tag, then re-run `./scripts/cycle.sh up` (it is idempotent
+> against a running cluster) and take *that* as cycle 1. Every later cycle
+> starts with the tag already on `main`, so the loop never recurs. Expect the
+> abandoned first attempt to record a `verify` row naming
+> `svc-hello(sync=Synced health=Progressing)` — that row is the evidence of
+> this step, not a regression.
+>
+> A second, smaller wait sits behind the same Application even once the image
+> is pushed: `svc-hello`'s readiness probe checks the database, so the
+> `Deployment` stays Progressing until the Cloud SQL instance is up and the
+> GRANT Job has completed. That is why the manifest sets
+> `progressDeadlineSeconds: 3600` and why `SYNC_TIMEOUT_SECONDS` defaults to
+> 2400. If a cold Cloud SQL create ever pushes past that, raise the
+> environment variable rather than shortening the probe.
+
+**G. Park between sessions.** From the first Database claim onward,
+`./scripts/cycle.sh park` after every `down`. It sets `activationPolicy: NEVER`
+on every Cloud SQL instance labelled `system`, which is the only running cost
+a `down` does not remove. Forgetting costs money, not correctness, and the
+results file records whether it ran.
+
 ## VPN
 
 The peer side (a UniFi gateway, for this build) needs to support **BGP**,
@@ -318,8 +440,13 @@ things the manual version can't:
 ./scripts/cycle.sh down        # destroy 3-argocd, then 2-cluster
 ./scripts/cycle.sh up          # apply 2-cluster, then 3-argocd, then verify
 ./scripts/cycle.sh cycle 3     # three full down+up cycles, back to back
+./scripts/cycle.sh park        # stop the paved road's Cloud SQL instances
 ./scripts/cycle.sh status      # what's live right now
 ```
+
+(`park` is the M2 addition and has nothing to do with the rebuild — see
+*Durable resources and the rebuild* below. The three things below are about
+`down`, `up` and `cycle`.)
 
 1. **It enforces the persist/disposable boundary in code.** The script
    cannot address `0-foundation` or `1-network` at all — naming either one
@@ -341,20 +468,130 @@ things the manual version can't:
 Each phase is appended to `scripts/cycle-results.tsv` (timestamp, cycle,
 phase, layer, seconds, exit code, note) — wall-clock down and up, per layer,
 across every run. That file is the evidence, so it's committed rather than
-gitignored.
+gitignored. Since M2 it also carries an `up`/`durable` row per rebuild and a
+`park` row per instance; both are explained below.
 
 Cycle numbers come from that file, not from you: `down` opens cycle
 *last + 1*, `up` continues the last cycle if it has a `down` but no `up`
 yet (so a teardown one evening and a rebuild the next morning are one
 cycle, and re-running `up` after a failure stays in the same cycle), and
-`cycle N` numbers each pass consecutively from there. Don't edit the
-numbers by hand.
+`cycle N` numbers each pass consecutively from there. `park` doesn't claim a
+number of its own — it records against the cycle most recently opened,
+because it's an operator action *between* cycles and a new number would
+inflate the count. Don't edit the numbers by hand.
 
 > **Note:** `root_app_automated_sync` defaults to `true` (since 2026-08-13).
 > With it `false`, a rebuilt root Application sits `OutOfSync` until someone
 > syncs it by hand and the verify step fails by design rather than wait it
 > out — which is the honest result, since "rebuilt without manual steps" can
 > only be claimed under automated sync.
+
+### Durable resources and the rebuild (M2, ADR-0015)
+
+Through M1, "rebuild from empty" was literally true: nothing running in the
+cluster had created anything outside it, so a teardown left a clean slate and
+a rebuild built onto one. M2 ends that. The paved road's whole purpose is that
+a merged claim creates something real in the cloud — a Cloud SQL instance, an
+Artifact Registry repository — and the platform's promise is that deleting the
+claim does **not** delete the database. Anything with that property also
+survives `cycle.sh down`, so on the way back up the platform meets its own
+leftovers. Three rules, all of them in the script:
+
+1. **`down` does not delete durable resources, and must never learn to.**
+   Today it can't even by accident — a cluster destroy is not a Kubernetes
+   delete, and the root Application carries no cascade-delete finalizer — but
+   that's an accident of construction, not a policy, so ADR-0015 makes it one.
+   Removing a database for real is a deliberate `gcloud` command run by a
+   human after the claim is gone, recorded as such. The platform offers no
+   automation for it, because a wrong number on a bill is recoverable and a
+   wrong delete is not.
+
+2. **`up` proves the rebuild *adopted* what was there rather than assuming
+   it.** Crossplane re-imports an existing cloud resource by its
+   `crossplane.io/external-name` annotation, which the Compositions derive
+   from the claim (`<system>` for a registry repository, `<system>-<claim>`
+   for an instance) precisely so a rebuild lands on the same name. But a
+   rebuild that *failed* to adopt — one that quietly stood up a fresh, empty
+   database next to the old one — would still reach 100% Applications
+   Synced/Healthy and get written into `cycle-results.tsv` as a clean cycle.
+   So `up` asks each durable resource when GCP created it and writes one more
+   row: `up / durable`, with every name stamped as
+   `<kind>/<name>@<createTime>` so the row can be re-read months later
+   without re-querying GCP. Four buckets, and the difference between them is
+   the whole point:
+
+   | Bucket | Means | Row |
+   |---|---|---|
+   | `adopted` | created before this `up` started — the external-name import worked | green |
+   | `new` | created during this `up`, and a name this file has never recorded | green — a tenant's first provision is not a failure |
+   | `recreated` | created during this `up`, but this file has seen the name before | **red**, unless `EXPECT_FRESH=1` |
+   | `unknown` | the createTime wasn't parseable, so the check answered nothing | **red** — a check that told you nothing must not read as a pass |
+
+   The results file is its own prior: that's what separates "the rebuild
+   failed to adopt" from "this had never been created before", which a
+   timestamp compare alone cannot tell apart. The one case it can't infer is
+   ADR-0015 §6's deliberate-delete rebuild, where re-creating a name we've
+   seen is the expected result — run that one as
+   `EXPECT_FRESH=1 ./scripts/cycle.sh up` and the row records the
+   expectation instead of a false finding.
+
+   On the happy path the check runs once every Application is Healthy,
+   because before then Crossplane hasn't finished reconciling. It *also*
+   runs when the verify step times out, marked `partial` — a rebuild that
+   blew the timeout while creating a fresh instance from scratch is exactly
+   the case the evidence exists for, so it's the last cycle that should
+   record silence.
+
+   Coverage is two of ADR-0015 §1's three durable kinds. The composed
+   `Database` (`app`) has no cloud-side creation timestamp to ask for — the
+   Cloud SQL API's database resource simply doesn't carry one — so it rides
+   on the instance: Crossplane observes a database inside an instance it
+   didn't re-create, so an adopted instance means an adopted database.
+
+   With no tenants yet it records zeroes and changes nothing — that's the
+   shape cycles 1–4 in the results file already have. A zero is only allowed
+   to be quiet when it's true: if `System`s or `Database` claims exist and
+   nothing in the cloud carries the label, the row goes red and names the
+   Composition field that stopped being set, because at that point both this
+   check and `park` have gone blind rather than found nothing.
+
+3. **Idle cost is handled by stopping, not deleting — `./scripts/cycle.sh
+   park`.** It sets Cloud SQL's activation policy to `NEVER` on every instance
+   the paved road created, which suspends the instance charge; storage and the
+   reserved private IP keep billing, and that's the honest price of keeping
+   the data. It is a separate command on purpose rather than a step inside
+   `down`: `cycle.sh`'s number is rebuild wall-clock, and folding cost hygiene
+   into the measured path would change that number and hide the choice. The
+   known failure mode is that someone forgets to run it; the results file
+   shows whether they did.
+
+Both `park` and the adoption check find their subjects by the `system` label
+the Compositions put on every cloud resource, never by a hand-kept list — the
+same label that makes "did the platform create this?" an auditable question
+afterwards. That's a contract with `platform-config`, so both sides say so
+when it breaks rather than reporting a tidy zero: `park` re-lists without the
+filter and warns if unlabelled instances are sitting there billing. That's also what keeps layer 0's own Artifact Registry remotes
+(`docker-hub`, `ghcr-io`, …) out of scope: they're Terraform's, they predate
+every System, and they carry no such label. Both reach those resources through
+`gcloud`, never Terraform, so the script's "only `2-cluster` and `3-argocd`"
+assertion is untouched and still covers every `terraform` call it can make.
+
+Nothing unparks on the way back up, and nothing needs to: the Composition
+declares `activationPolicy: ALWAYS` and holds the `Update` management policy,
+so Crossplane sees a parked instance as drift and starts it again. The same
+mechanism is why `park` can be run at any time but only *sticks* while the
+cluster is down.
+
+> **This changes what a cycle time means.** From the first `Database` claim
+> on, `up` includes an instance restart and adoption on the critical path, so
+> those timings are not comparable to M1's — the same caveat that applied when
+> Cloud NAT moved layers. The `up / durable` row is where the difference shows
+> up rather than quietly inflating the `up / TOTAL` number. It also moves the
+> verify timeout: `SYNC_TIMEOUT_SECONDS` defaults to 2400 rather than M1's
+> 900, because nothing goes `Healthy` until Cloud SQL itself reports ready
+> and the grant job completes. A timeout here isn't a soft failure — it kills
+> the run and gets counted as a C-02 manual intervention — so a number too
+> small would manufacture failures out of slow but correct rebuilds.
 
 ## What Terraform deliberately does NOT manage
 
@@ -443,11 +680,25 @@ This repo is one of seven that make up the reference implementation of the
 **Platform Factory** pattern. The design seed — pattern docs, ADRs, and the
 build plan — lives at [https://github.com/thecloudgeek/platform-factory](https://github.com/thecloudgeek/platform-factory).
 
-This repo is built out in **M1**.
+This repo is built out in **M1** and extended in **M2**.
 
 ## Status
 
-**Status:** M1 in progress. All four layers are written, `terraform
+**Status:** M2 — the layer changes are authored and `terraform validate`-clean,
+and **not yet applied**. What M2 adds here: the Crossplane provider Google
+service account with its five Workload Identity bindings and its project roles
+(`0-foundation/iam.tf`), the `sqladmin` and `servicenetworking` APIs
+(`0-foundation/main.tf`), Private Services Access for private-IP Cloud SQL
+(`1-network/psa.tf`), `authenticator_groups_config` on the cluster
+(`2-cluster/gke.tf`), Argo CD health checks for the two XR kinds
+(`3-argocd/argocd.tf`), and `cycle.sh park` plus the durable-resource adoption
+check. The operator order for all of it is **Runbook step 5** above; the
+layer-1 apply in that list is a C-01 crossing on a persistent layer and should
+be counted as such.
+
+Everything below is M1 and has been exercised.
+
+**M1:** All four layers are written, `terraform
 validate`-clean (`1-network` validated with `enable_vpn` both true and false),
 and **applied against real infrastructure** — `0-foundation` and `1-network`
 have been live since 2026-08-06 and persist by design, while `2-cluster` and
