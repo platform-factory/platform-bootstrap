@@ -237,6 +237,212 @@ argocd` (with your kubeconfig pointed at the new cluster) should show the
 root plus one child Application per file in that directory, all
 `Synced`/`Healthy`; `scripts/cycle.sh up` waits for exactly that.
 
+### 5. M2 — bringing up the paved road on an already-bootstrapped project
+
+M2 adds tenants, a real Cloud SQL database and Google-Group RBAC. None of that
+is reachable by a single `terraform apply`, and the order below is not a
+preference — each step is a hard prerequisite of the one after it. This is the
+consolidated list; the reasoning behind each line lives in the file it touches.
+It is written as the order that **actually worked** on 2026-09-16, not the
+order that looked right beforehand.
+
+> **One rule cuts across every Terraform step here: plan a layer only after the
+> layer below it has been applied.** A plan generated earlier reads the lower
+> layer's passthrough outputs as `null`, and Terraform omits null outputs from
+> state entirely — so the plan is silently short one value and nothing warns
+> you. On 2026-09-16 the `1-network` plan was generated before `0-foundation`
+> was applied, `gke_security_group` came through as null, and recovering it
+> cost a second, outputs-only apply (0 added, 0 changed, 0 destroyed).
+
+**A. Google Workspace (a Workspace admin, not Terraform), and nothing before
+it.** Nothing on the Google side of the platform resolves until these exist:
+layer 0 grants `roles/container.clusterViewer` to the umbrella group by name,
+and the System Composition puts `group:<team>@thecloudgeek.io` into three IAM
+bindings per tenant (Artifact Registry writer, and the two Cloud SQL login
+roles). Create the umbrella group — the local part must be exactly
+`gke-security-groups`, GKE requires that name — then the team groups, then nest
+the teams *inside* the umbrella as member groups rather than adding
+individuals.
+
+First, turn the API on and know which project is paying for the call:
+
+```
+gcloud services enable cloudidentity.googleapis.com --project=platform-factory-ref
+```
+
+> **Every `gcloud identity` call below needs an explicit
+> `--billing-project`.** Cloud Identity bills the quota project, and this
+> identity's *default* quota project resolves to a project it cannot use — the
+> same billing/quota-project confusion M1 hit. Without the flag the calls fail
+> for a reason that has nothing to do with groups. `cloudidentity` is one of
+> three APIs enabled by hand on 2026-09-16 rather than in
+> `0-foundation/main.tf` — the other two, `policytroubleshooter` and
+> `cloudasset`, were diagnostics for the IAM question in `systems/README.md`.
+> Codifying all three here or switching them off again is open work.
+
+```
+gcloud identity groups create gke-security-groups@thecloudgeek.io \
+  --organization=thecloudgeek.io --group-display-name="GKE security groups" \
+  --labels=cloudidentity.googleapis.com/groups.discussion_forum \
+  --billing-project=platform-factory-ref
+gcloud identity groups create payments@thecloudgeek.io \
+  --organization=thecloudgeek.io --group-display-name="Payments" \
+  --labels=cloudidentity.googleapis.com/groups.discussion_forum \
+  --billing-project=platform-factory-ref
+gcloud identity groups create checkout@thecloudgeek.io \
+  --organization=thecloudgeek.io --group-display-name="Checkout" \
+  --labels=cloudidentity.googleapis.com/groups.discussion_forum \
+  --billing-project=platform-factory-ref
+
+gcloud identity groups memberships add \
+  --group-email=gke-security-groups@thecloudgeek.io \
+  --member-email=payments@thecloudgeek.io \
+  --billing-project=platform-factory-ref
+gcloud identity groups memberships add \
+  --group-email=gke-security-groups@thecloudgeek.io \
+  --member-email=checkout@thecloudgeek.io \
+  --billing-project=platform-factory-ref
+```
+
+Two things to clean up after, neither of which blocks the rest of the runbook.
+Creating the umbrella group makes the creator its direct `OWNER`/`MEMBER`, and
+GKE's rule for `gke-security-groups` is groups-only — so that direct membership
+should be removed. And team membership is what the RBAC tests actually exercise:
+on 2026-09-16 the project owner was put in `payments@`, plus one non-owner
+external account as the C-06 test identity. A project owner is not a valid test
+subject for RBAC (IAM grants an owner everything regardless of what RBAC says).
+
+Then, in the Admin console, set **View Members** for *Group Members* on the
+umbrella group **and on each team group**. Without it GKE cannot resolve
+membership at all, and the failure is indistinguishable from the
+`authenticator_groups_config` block being absent — you will re-read Terraform
+that is already correct. Group changes are cached for a few minutes plus
+roughly an hour of credential caching, so do not read a fresh failure as a
+broken binding.
+
+**B. `0-foundation` — the M2 identity and API surface.** Uncomment
+`gke_security_group` in `terraform.tfvars` now that the group exists, then plan
+and apply. This adds the Crossplane provider Google service account, its five
+Workload Identity bindings, its project roles (including the conditioned
+`projectIamAdmin`), `roles/container.clusterViewer` for the umbrella group, and
+the `sqladmin` / `servicenetworking` APIs. On 2026-09-16 that was 14 added, 0
+changed, 0 destroyed.
+
+**C. `1-network` — Private Services Access. Do not skip this even though
+`1-network` is a persistent layer, and generate its plan only now.** Two
+independent reasons to run it: `psa.tf` is what a private-IP Cloud SQL instance
+needs (without it a `DatabaseInstance` sits in a `NETWORK_NOT_PEERED` retry
+loop rather than failing loudly), and this layer is where `gke_security_group`
+is *re-published* to `2-cluster`. `cycle.sh` only ever rebuilds `2-cluster` and
+`3-argocd`, so setting the group in foundation and skipping this apply leaves
+the cluster with no group RBAC and no error anywhere. The apply itself is small
+— 2 resources, the `10.60.0.0/16` allocated range and the service-networking
+connection — and it is a C-01 crossing on a persistent layer, so count it as
+one.
+
+**D. Rebuild the cluster.** `./scripts/cycle.sh down` then
+`./scripts/cycle.sh up`. The rebuild is what picks up
+`authenticator_groups_config` (layer 2) and the Argo CD XR health checks
+(layer 3); both layers are disposable, so they carry their M2 changes on the
+normal cycle with no separate apply. `up` now waits up to
+`SYNC_TIMEOUT_SECONDS` (2400) because a Cloud SQL create and the GRANT Job are
+on the critical path.
+
+**Steps E and F happen *while* that `up` is still in its verify loop.** Do not
+wait for it to finish, and do not expect to run them between two cycles: both
+need objects that only exist once wave 4 has composed the first tenant, and the
+`up` will not go green until they are done. Keep a second terminal open.
+
+**E. Push the `svc-hello` image, once the System's registry exists.** The
+Artifact Registry repository it pushes to
+(`.../platform-factory-ref/svc-hello`) is created by the System Composition, so
+it does not exist until the `systems` Application has synced
+`tenants/svc-hello.yaml` and the `RegistryRepository` managed resource is
+Ready. Watch for that, then, from the `svc-hello` clone:
+
+```
+make login        # once per laptop
+docker buildx build --platform linux/amd64 \
+  -t us-central1-docker.pkg.dev/platform-factory-ref/svc-hello/svc-hello:$(git rev-parse --short HEAD) \
+  --push .
+make set-image    # rewrite k8s/deployment.yaml to that tag
+git commit -am 'svc-hello: pin image to <sha>' && git push
+```
+
+`buildx`, not the legacy builder: the Dockerfile runs its builder stage on
+`$BUILDPLATFORM` and cross-compiles to `TARGETOS`/`TARGETARCH`, and the legacy
+builder loses the platform at the first intermediate layer. `svc-hello`'s own
+README has the full story and the Makefile caveat.
+
+The manifest ships with the tag `REPLACE_ME` on purpose, so an unpushed
+checkout cannot be mistaken for a deployable one; the PR check fails if
+`REPLACE_ME` ever reaches `main`.
+
+> **This step sits inside a genuine circular dependency**, and it is the reason
+> the first M2 bring-up is a bring-up rather than a measured C-02 cycle.
+> `cycle.sh up` waits for *every* `Application` in `argocd` to be
+> `Synced`/`Healthy`, and the tenant's own `Application` — created by the
+> System Composition, so it appears only after wave 4 — cannot be Healthy while
+> its `Deployment` is pulling `REPLACE_ME`. But the registry it pushes to does
+> not exist until that same wave has run. There is no ordering that avoids this
+> on a green-field project; the loop is broken by hand, once.
+>
+> It resolves *inside* the verify window rather than failing it: push the image
+> once the registry is Ready, and kubelet's own `ImagePullBackOff` retry picks
+> it up and the pod recovers. On 2026-09-16 verify finished at 2289s of a
+> 2400-second budget with that push in the middle of it, so no re-run of `up`
+> was needed. Only the first bring-up on a green-field project does this — the
+> registry is durable afterwards, and every later cycle starts with the tag
+> already on `main`.
+>
+> A second, smaller wait sits behind the same Application even once the image
+> is pushed: `svc-hello`'s readiness probe checks the database, so the
+> `Deployment` stays Progressing until the Cloud SQL instance is up and the
+> GRANT Job has completed. That is why the manifest sets
+> `progressDeadlineSeconds: 3600` and why `SYNC_TIMEOUT_SECONDS` defaults to
+> 2400. If a cold Cloud SQL create ever pushes past that, raise the
+> environment variable rather than shortening the probe.
+
+**F. Create the database's IAM user by hand — one command per database, until
+the provider is fixed.** provider-upjet-gcp v3.0.0 cannot create a passwordless
+`sql User` at all: the create path panics (`async create failed: recovered from
+panic: not a string`, crossplane-contrib/provider-upjet-gcp issue #1000, open),
+and a `CLOUD_IAM_SERVICE_ACCOUNT` user is passwordless by definition. There is
+no workaround in the Composition — Cloud SQL rejects a password on an IAM user
+outright. So once the instance reports `RUNNABLE`, create the user out of band
+and let the provider's `Observe` path adopt it:
+
+```
+gcloud sql users create svc-hello@platform-factory-ref.iam \
+  --instance=svc-hello-main --type=CLOUD_IAM_SERVICE_ACCOUNT
+```
+
+The symptom that tells you it is missing is in the application log:
+`FATAL: password authentication failed for user "svc-hello@platform-factory-ref.iam"`.
+Count this as a manual intervention every time; it is what a provider bump in
+M4 is meant to remove.
+
+**G. Re-advertise the tailnet routes.** The PSA range is a fourth entry in
+`private_ranges` and an already-joined jump box does not pick it up:
+
+```
+gcloud compute ssh platform-factory-ref-jumpbox --tunnel-through-iap --zone us-central1-a
+# on the box, run this layer's output verbatim:
+terraform -chdir=layers/1-network output -raw jumpbox_tailscale_up_command
+```
+
+Then **approve the new `10.60.0.0/16` subnet route in the Tailscale admin
+console**. Advertising is not enough; peers cannot use it until it is approved.
+This was **not done** on 2026-09-16, so the PSA range is not yet reachable from
+the tailnet; nothing in the cluster depends on it, and the C-07 database proof
+was taken from a probe pod inside the namespace instead.
+
+**H. Park between sessions.** From the first Database claim onward,
+`./scripts/cycle.sh park` after every `down`. It sets `activationPolicy: NEVER`
+on every Cloud SQL instance labelled `system`, which is the only running cost
+a `down` does not remove. Forgetting costs money, not correctness, and the
+results file records whether it ran.
+
 ## VPN
 
 The peer side (a UniFi gateway, for this build) needs to support **BGP**,
@@ -319,8 +525,13 @@ things the manual version can't:
 ./scripts/cycle.sh down        # destroy 3-argocd, then 2-cluster
 ./scripts/cycle.sh up          # apply 2-cluster, then 3-argocd, then verify
 ./scripts/cycle.sh cycle 3     # three full down+up cycles, back to back
+./scripts/cycle.sh park        # stop the paved road's Cloud SQL instances
 ./scripts/cycle.sh status      # what's live right now
 ```
+
+(`park` is the M2 addition and has nothing to do with the rebuild — see
+*Durable resources and the rebuild* below. The three things below are about
+`down`, `up` and `cycle`.)
 
 1. **It enforces the persist/disposable boundary in code.** The script
    cannot address `0-foundation` or `1-network` at all — naming either one
@@ -342,20 +553,136 @@ things the manual version can't:
 Each phase is appended to `scripts/cycle-results.tsv` (timestamp, cycle,
 phase, layer, seconds, exit code, note) — wall-clock down and up, per layer,
 across every run. That file is the evidence, so it's committed rather than
-gitignored.
+gitignored. Since M2 it also carries an `up`/`durable` row per rebuild and a
+`park` row per instance; both are explained below.
 
 Cycle numbers come from that file, not from you: `down` opens cycle
 *last + 1*, `up` continues the last cycle if it has a `down` but no `up`
 yet (so a teardown one evening and a rebuild the next morning are one
 cycle, and re-running `up` after a failure stays in the same cycle), and
-`cycle N` numbers each pass consecutively from there. Don't edit the
-numbers by hand.
+`cycle N` numbers each pass consecutively from there. `park` doesn't claim a
+number of its own — it records against the cycle most recently opened,
+because it's an operator action *between* cycles and a new number would
+inflate the count. Don't edit the numbers by hand.
 
 > **Note:** `root_app_automated_sync` defaults to `true` (since 2026-08-13).
 > With it `false`, a rebuilt root Application sits `OutOfSync` until someone
 > syncs it by hand and the verify step fails by design rather than wait it
 > out — which is the honest result, since "rebuilt without manual steps" can
 > only be claimed under automated sync.
+
+### Durable resources and the rebuild (M2, ADR-0015)
+
+Through M1, "rebuild from empty" was literally true: nothing running in the
+cluster had created anything outside it, so a teardown left a clean slate and
+a rebuild built onto one. M2 ends that. The paved road's whole purpose is that
+a merged claim creates something real in the cloud — a Cloud SQL instance, an
+Artifact Registry repository — and the platform's promise is that deleting the
+claim does **not** delete the database. Anything with that property also
+survives `cycle.sh down`, so on the way back up the platform meets its own
+leftovers. Three rules, all of them in the script:
+
+1. **`down` does not delete durable resources, and must never learn to.**
+   Today it can't even by accident — a cluster destroy is not a Kubernetes
+   delete, and the root Application carries no cascade-delete finalizer — but
+   that's an accident of construction, not a policy, so ADR-0015 makes it one.
+   Removing a database for real is a deliberate `gcloud` command run by a
+   human after the claim is gone, recorded as such. The platform offers no
+   automation for it, because a wrong number on a bill is recoverable and a
+   wrong delete is not.
+
+2. **`up` proves the rebuild *adopted* what was there rather than assuming
+   it.** Crossplane re-imports an existing cloud resource by its
+   `crossplane.io/external-name` annotation, which the Compositions derive
+   from the claim (`<system>` for a registry repository, `<system>-<claim>`
+   for an instance) precisely so a rebuild lands on the same name. But a
+   rebuild that *failed* to adopt — one that quietly stood up a fresh, empty
+   database next to the old one — would still reach 100% Applications
+   Synced/Healthy and get written into `cycle-results.tsv` as a clean cycle.
+   So `up` asks each durable resource when GCP created it and writes one more
+   row: `up / durable`, with every name stamped as
+   `<kind>/<name>@<createTime>` so the row can be re-read months later
+   without re-querying GCP. Four buckets, and the difference between them is
+   the whole point:
+
+   | Bucket | Means | Row |
+   |---|---|---|
+   | `adopted` | created before this `up` started — the external-name import worked | green |
+   | `new` | created during this `up`, and a name this file has never recorded | green — a tenant's first provision is not a failure |
+   | `recreated` | created during this `up`, but this file has seen the name before | **red**, unless `EXPECT_FRESH=1` |
+   | `unknown` | the createTime wasn't parseable, so the check answered nothing | **red** — a check that told you nothing must not read as a pass |
+
+   The results file is its own prior: that's what separates "the rebuild
+   failed to adopt" from "this had never been created before", which a
+   timestamp compare alone cannot tell apart. The one case it can't infer is
+   ADR-0015 §6's deliberate-delete rebuild, where re-creating a name we've
+   seen is the expected result — run that one as
+   `EXPECT_FRESH=1 ./scripts/cycle.sh up` and the row records the
+   expectation instead of a false finding.
+
+   On the happy path the check runs once every Application is Healthy,
+   because before then Crossplane hasn't finished reconciling. It *also*
+   runs when the verify step times out, marked `partial` — a rebuild that
+   blew the timeout while creating a fresh instance from scratch is exactly
+   the case the evidence exists for, so it's the last cycle that should
+   record silence.
+
+   Coverage is two of ADR-0015 §1's three durable kinds. The composed
+   `Database` (`app`) has no cloud-side creation timestamp to ask for — the
+   Cloud SQL API's database resource simply doesn't carry one — so it rides
+   on the instance: Crossplane observes a database inside an instance it
+   didn't re-create, so an adopted instance means an adopted database.
+
+   With no tenants it records zeroes and changes nothing. Its first real run
+   was cycle 4 `up` on 2026-09-16, and it exited 1: adopted 0, recreated 0,
+   new 1 (the `svc-hello` Cloud SQL instance — a first provision, correctly
+   green), unknown 2 (both Artifact Registry repositories). The unknowns were
+   the check catching a bug in itself: `gcloud artifacts repositories list`
+   rewrites `createTime` into local time with no zone even under
+   `--format=value()`, so the Zulu guard fired rather than comparing wrong
+   timestamps silently. Forcing UTC fixed it. A zero is only allowed
+   to be quiet when it's true: if `System`s or `Database` claims exist and
+   nothing in the cloud carries the label, the row goes red and names the
+   Composition field that stopped being set, because at that point both this
+   check and `park` have gone blind rather than found nothing.
+
+3. **Idle cost is handled by stopping, not deleting — `./scripts/cycle.sh
+   park`.** It sets Cloud SQL's activation policy to `NEVER` on every instance
+   the paved road created, which suspends the instance charge; storage and the
+   reserved private IP keep billing, and that's the honest price of keeping
+   the data. It is a separate command on purpose rather than a step inside
+   `down`: `cycle.sh`'s number is rebuild wall-clock, and folding cost hygiene
+   into the measured path would change that number and hide the choice. The
+   known failure mode is that someone forgets to run it; the results file
+   shows whether they did.
+
+Both `park` and the adoption check find their subjects by the `system` label
+the Compositions put on every cloud resource, never by a hand-kept list — the
+same label that makes "did the platform create this?" an auditable question
+afterwards. That's a contract with `platform-config`, so both sides say so
+when it breaks rather than reporting a tidy zero: `park` re-lists without the
+filter and warns if unlabelled instances are sitting there billing. That's also what keeps layer 0's own Artifact Registry remotes
+(`docker-hub`, `ghcr-io`, …) out of scope: they're Terraform's, they predate
+every System, and they carry no such label. Both reach those resources through
+`gcloud`, never Terraform, so the script's "only `2-cluster` and `3-argocd`"
+assertion is untouched and still covers every `terraform` call it can make.
+
+Nothing unparks on the way back up, and nothing needs to: the Composition
+declares `activationPolicy: ALWAYS` and holds the `Update` management policy,
+so Crossplane sees a parked instance as drift and starts it again. The same
+mechanism is why `park` can be run at any time but only *sticks* while the
+cluster is down.
+
+> **This changes what a cycle time means.** From the first `Database` claim
+> on, `up` includes an instance restart and adoption on the critical path, so
+> those timings are not comparable to M1's — the same caveat that applied when
+> Cloud NAT moved layers. The `up / durable` row is where the difference shows
+> up rather than quietly inflating the `up / TOTAL` number. It also moves the
+> verify timeout: `SYNC_TIMEOUT_SECONDS` defaults to 2400 rather than M1's
+> 900, because nothing goes `Healthy` until Cloud SQL itself reports ready
+> and the grant job completes. A timeout here isn't a soft failure — it kills
+> the run and gets counted as a C-02 manual intervention — so a number too
+> small would manufacture failures out of slow but correct rebuilds.
 
 ## What Terraform deliberately does NOT manage
 
@@ -444,12 +771,92 @@ This repo is one of seven that make up the reference implementation of the
 **Platform Factory** pattern. The design seed — pattern docs, ADRs, and the
 build plan — lives at [https://github.com/thecloudgeek/platform-factory](https://github.com/thecloudgeek/platform-factory).
 
-This repo was built out in **M1** (closed 2026-08-28).
+This repo is built out in **M1** and extended in **M2**.
 
 ## Status
 
-**Status:** M1 closed 2026-08-28; M2 has not started. All four layers are
-written, `terraform validate`-clean (`1-network` validated with `enable_vpn` both true and false),
+**Status:** M2 — **applied on 2026-09-16, and rebuilt clean on 2026-09-17.**
+All four layers now carry their M2 changes, and the two persistent layers were
+applied by hand while the two disposable ones came back on the normal
+`cycle.sh up`.
+
+**The first clean M2 cycle (cycle 5, 2026-09-17), zero manual steps:** `down`
+10m42s, `park` 55s (it found the Cloud SQL instance by its `system` label and
+stopped it), `up` 35m31s — cluster 801s, Argo CD 89s, then a 1235s wait for
+10/10 Applications. The adoption check recorded `adopted: 3, recreated: 0`:
+the Cloud SQL instance and both registries came back as themselves, not as
+fresh empty copies. Nothing unparks: Crossplane restarted the parked instance
+by itself about twenty seconds after the claim synced on the new cluster.
+That `up` is roughly twice M1's, and about twenty minutes of it is a database
+restarting and a tenant that is not Healthy until its database is — the
+rebuild is no longer from empty, and ADR-0015 said the number would show it.
+The session ended with `down` and `park` (cycle 6): nothing billable by the
+hour is left running.
+
+**Layer 0 (`0-foundation`) — 14 added, 0 changed, 0 destroyed.** The identity
+the platform's GitOps side needs in order to create anything in the cloud, and
+it is the one thing that cannot arrive by PR, because it is the identity that
+*applies* PRs: `google_service_account` `crossplane-provider-gcp`, five
+`workloadIdentityUser` bindings (one per pinned provider Kubernetes service
+account), and five project roles — `artifactregistry.admin`, `cloudsql.admin`,
+`iam.serviceAccountAdmin`, `compute.viewer` and
+`resourcemanager.projectIamAdmin`, the last under an IAM Condition titled
+`only-cloudsql-connect-roles`. Plus `roles/container.clusterViewer` for
+`group:gke-security-groups@`, and the `sqladmin` and `servicenetworking` APIs.
+
+**Layer 1 (`1-network`) — 2 added.** Private Services Access:
+`google_compute_global_address` `psa` at `10.60.0.0/16`, purpose
+`VPC_PEERING`, and the `google_service_networking_connection` that consumes it.
+Reachability, so it persists. Then a **second, outputs-only apply** (0 added, 0
+changed, 0 destroyed) to publish `gke_security_group`, because that layer's
+plan had been generated before layer 0 was applied and Terraform omits null
+outputs from state — the lesson now written at the top of Runbook step 5.
+
+**Layers 2 and 3 were rebuilt, not separately applied.** They are disposable,
+so `authenticator_groups_config` on the cluster (`2-cluster/gke.tf`) and the
+Argo CD health customizations for `platform.thecloudgeek.io_System` and
+`_Database` (`3-argocd/argocd.tf`) simply arrived on the next `cycle.sh up`.
+No health check was added for managed resources: Argo CD 3.4.6 already ships a
+built-in `*.upbound.io` one.
+
+**Counted against C-01**, these are post-M1 Terraform applies #2, #3 and #3b
+(#1 was the `xpkg.upbound.io` remote removal on 2026-09-02). All three are
+crossings on persistent layers, and none could have been a PR: provider
+identity, API enablement and project IAM are layer 0 by this repo's own rule,
+PSA is reachability, and group RBAC is a cluster-create flag. #3b is a crossing
+nobody planned — it exists only because the layer-1 plan was generated too
+early. Three things were done
+outside Terraform entirely and should be codified here or switched off —
+`gcloud services enable` for `cloudidentity` (needed as the quota project for
+group management), `policytroubleshooter` and `cloudasset` (diagnostics).
+
+**Cycle 4 `up` — the first M2 bring-up — is not a clean C-02 cycle**, and
+`cycle-results.tsv` records it as what it was: `2-cluster` 774s, `3-argocd`
+89s, verify 2289s to 10/10 Applications Synced/Healthy against a 2400s
+deadline, TOTAL 3157s (52m37s). Four interventions landed inside that window —
+the planned one-time image push, one out-of-band `gcloud sql users create`, a
+hard refresh of two Applications, and five fix PRs merged into
+`platform-config` while verify waited. The `up`/`durable` row exits 1, and the
+reason is a bug in the check rather than in the platform: adopted 0, recreated
+0, new 1 (`cloudsql/svc-hello-main@2026-09-16T16:54:08.673Z`), unknown 2 — the
+two registry repositories, whose timestamps it could not parse.
+`gcloud artifacts repositories list` rewrites `createTime` into local time with
+no zone even under `--format=value()`, so the check's own Zulu guard counted
+both as `unknown` and, as designed for any unknown, exited 1. Fixed by forcing
+UTC
+(commit `88129e7`); no rebuild has run since, so `cycle-results.tsv` has no
+row yet that exercises the fix.
+
+Still open here: one parked rebuild (`down` → `park` → `up`) for an honest
+C-02 number and for adoption-after-teardown; codifying or disabling the three
+hand-enabled APIs; the tailnet route for the PSA range (Runbook step 5G). The
+cluster and the Cloud SQL instance were left **running** overnight
+2026-09-16→17 — a real cost — because the session's cloud credentials expired.
+
+Everything below is M1 and has been exercised.
+
+**M1:** All four layers are written, `terraform
+validate`-clean (`1-network` validated with `enable_vpn` both true and false),
 and **applied against real infrastructure** — `0-foundation` and `1-network`
 have been live since 2026-08-06 and persist by design, while `2-cluster` and
 `3-argocd` are destroyed and rebuilt between sessions by `scripts/cycle.sh`

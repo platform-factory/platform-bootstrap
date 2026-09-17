@@ -33,3 +33,39 @@ variable "region" {
   type        = string
   default     = "us-central1"
 }
+
+variable "gke_security_group" {
+  description = <<-EOT
+    Email of the umbrella Google Group used for GKE RBAC group resolution.
+
+    The local part MUST be exactly "gke-security-groups" — that is a GKE
+    requirement, not a naming convention (kubernetes-engine/docs/how-to/
+    google-groups-rbac, checked 2026-09-16: "Create a group in your domain
+    named gke-security-groups. The gke-security-groups name is required.").
+    Team groups are nested inside it; individual users must not be members.
+
+    Defaults to null because the group is created by a Workspace admin
+    outside Terraform and may not exist yet. While null, the
+    roles/container.clusterViewer binding in iam.tf creates nothing and
+    2-cluster's authenticator_groups_config block renders nothing — so the
+    M2 floor can be applied before the Workspace work is done, and the
+    groups can be switched on later with a variable change instead of a
+    code change.
+  EOT
+  type        = string
+  default     = null
+
+  validation {
+    # Caught here rather than two layers and one full cluster build later.
+    # Without this, a wrong local part applies cleanly in this layer (the
+    # clusterViewer binding in iam.tf would bind to whatever group was named,
+    # succeeding if it happens to exist), flows through 1-network's passthrough
+    # and is only rejected by GKE during 2-cluster's cluster creation — the
+    # provider's own schema description for
+    # authenticator_groups_config.security_group is "Group name must be in
+    # format gke-security-groups@yourdomain.com". Null must stay valid: it is
+    # the deliberate pre-Workspace state described above.
+    condition     = var.gke_security_group == null || can(regex("^gke-security-groups@[a-z0-9-]+(\\.[a-z0-9-]+)+$", var.gke_security_group))
+    error_message = "gke_security_group must be null, or an email whose local part is exactly \"gke-security-groups\" (a GKE requirement, not a convention)."
+  }
+}

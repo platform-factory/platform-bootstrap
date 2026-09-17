@@ -6,3 +6,17 @@ billing_account = "XXXXXX-XXXXXX-XXXXXX"
 # Only needed if the default in variables.tf ("platform-factory-ref") is
 # already taken — project ids are globally unique across all of GCP.
 # project_id = "platform-factory-ref"
+
+# Umbrella Google Group for GKE RBAC (M2 / ADR-0012 §5). Leave commented out
+# until a Workspace admin has actually created the group — while it is unset,
+# the roles/container.clusterViewer binding in iam.tf and 2-cluster's
+# authenticator_groups_config block both render nothing, so the platform
+# builds and runs without it.
+#
+# The local part must be exactly "gke-security-groups"; GKE requires that
+# name. Team groups (payments@, checkout@, ...) go INSIDE it as nested
+# groups, not as individual users, and the umbrella group and each team group
+# both need "View Members" permission set for Group Members or GKE cannot
+# resolve membership.
+#
+# gke_security_group = "gke-security-groups@thecloudgeek.io"

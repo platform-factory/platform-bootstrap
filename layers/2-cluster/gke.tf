@@ -92,6 +92,86 @@ resource "google_container_cluster" "primary" {
     workload_pool = "${data.terraform_remote_state.network.outputs.project_id}.svc.id.goog"
   }
 
+  # Google Groups for RBAC. This is what lets a RoleBinding name a Google
+  # Group as its subject and have GKE actually resolve the caller's
+  # membership — without it, a binding on payments@thecloudgeek.io matches
+  # nobody and the whole ADR-0012 tenancy model has no enforcement point.
+  #
+  # GKE resolves membership ONLY for groups nested under one umbrella group,
+  # and the umbrella group's local part is not a convention, it is a
+  # requirement: it must be named exactly `gke-security-groups` in the
+  # domain. Verified 2026-09-16 against docs.cloud.google.com/
+  # kubernetes-engine/docs/how-to/google-groups-rbac ("Create a group in
+  # your domain named gke-security-groups. The gke-security-groups name is
+  # required.") and against the provider schema's own description, which
+  # repeats the format.
+  #
+  # Two consequences worth carrying forward, both from the same doc:
+  #   - Team groups are NESTED INSIDE the umbrella group. Individual users
+  #     are not added to it directly. GKE checks that the group granting
+  #     access is itself nested under gke-security-groups.
+  #   - The group names in RoleBindings are CASE-SENSITIVE, so the System
+  #     Composition's <team>@thecloudgeek.io must match the Workspace group
+  #     exactly.
+  #
+  # MANUAL PREREQUISITES ON THE WORKSPACE SIDE, from the same doc, because
+  # getting them wrong produces a failure INDISTINGUISHABLE from this block
+  # being absent — the RoleBinding simply matches nobody, and the operator
+  # comes back here to re-read Terraform that is already correct:
+  #   - The umbrella group AND every nested team group must have the "View
+  #     Members" permission selected for Group Members, or GKE cannot
+  #     enumerate membership at all. Quoted from the doc: "Make sure the
+  #     group has the View Members permission selected for Group Members" and
+  #     "Each group must have the View members permission for Group members."
+  #   - Changes take time to land. "Information about Google Groups
+  #     membership is cached for a short time. It might take a few minutes
+  #     for changes in group memberships to propagate to all your clusters.
+  #     In addition to latency from group changes, standard caching of user
+  #     credentials on the cluster is about one hour." So after fixing a
+  #     group, re-test an hour later before concluding the binding is wrong —
+  #     otherwise the second fix gets applied to a problem that was already
+  #     solved.
+  #
+  # WHY THE DYNAMIC BLOCK. Creating Workspace groups is a manual admin task
+  # outside the paved road (ADR-0012 §3), and at the time this was written
+  # it was not yet confirmed that any of the groups exist. A hardcoded
+  # group email would make this layer un-appliable until someone finished
+  # an errand in the Admin console; with the passthrough null, this block
+  # renders nothing and the cluster is exactly the M1 cluster. That keeps
+  # the "bundle every M2 change into one apply per layer" plan achievable
+  # rather than blocked on a dependency Terraform cannot create.
+  #
+  # C-06 EVIDENCE. This is the cluster-side half of "ownership moves
+  # without re-plumbing": with group RBAC resolving, moving svc-hello
+  # between teams is a one-line change to spec.owner.team and the
+  # Composition rebinds the group. Without it, the move would have to
+  # re-plumb individual user bindings, which is what the claim says should
+  # not be necessary.
+  #
+  # C-01 COUNTER, stated honestly: this is a Terraform change to a
+  # disposable layer, so it arrives on the next rebuild rather than as a
+  # standalone apply — but it is still one of the four crossings the M2
+  # readiness walk predicted, and it is counted as such. It is bundled with
+  # nothing else in this layer precisely so the crossing is one per layer
+  # rather than one per discovery.
+  #
+  # GOTCHA FOR LATER: the provider marks this attribute Computed, so
+  # DELETING the block does not turn the feature off — Terraform keeps the
+  # last value it read. Disabling group RBAC needs an out-of-band change
+  # (`gcloud container clusters update ... --security-group=""`), not a
+  # config deletion. Adding it, by contrast, is an in-place update and does
+  # not recreate the cluster (no ForceNew on the schema; the provider has an
+  # explicit DesiredAuthenticatorGroupsConfig update path) — irrelevant here
+  # because this layer is rebuilt, but worth knowing before anyone panics
+  # at a plan.
+  dynamic "authenticator_groups_config" {
+    for_each = local.gke_security_group == null ? [] : [local.gke_security_group]
+
+    content {
+      security_group = authenticator_groups_config.value
+    }
+  }
+
   release_channel {
     channel = "REGULAR"
   }

@@ -25,3 +25,23 @@ timestamp_utc	cycle	phase	layer	seconds	exit_code	note
 2026-08-28T04:55:44Z	4	down	3-argocd	58	0	
 2026-08-28T05:05:42Z	4	down	2-cluster	597	0	
 2026-08-28T05:05:42Z	4	down	TOTAL	657	0	
+2026-09-16T16:45:37Z	4	up	2-cluster	774	0	
+2026-09-16T16:47:07Z	4	up	3-argocd	89	0	
+2026-09-16T17:25:18Z	4	up	verify	2289	0	10/10 Applications Synced/Healthy
+2026-09-16T17:25:19Z	4	up	durable	1	1	adopted: 0, recreated: 0, new: 1 [cloudsql/svc-hello-main@2026-09-16T16:54:08.673Z], unknown: 2 [registry/svc-hello@2026-09-16T09:53:10 registry/svc-ledger@2026-09-16T10:05:14]
+2026-09-16T17:25:19Z	4	up	TOTAL	3157	0	
+2026-09-17T11:49:55Z	5	down	3-argocd	46	0	
+2026-09-17T11:59:50Z	5	down	2-cluster	594	0	
+2026-09-17T11:59:50Z	5	down	TOTAL	642	0	
+2026-09-17T12:00:49Z	5	park	svc-hello-main	54	0	activation policy NEVER
+2026-09-17T12:00:49Z	5	park	TOTAL	55	0	parked: 1, failed: 0
+2026-09-17T12:14:24Z	5	up	2-cluster	801	0	
+2026-09-17T12:15:55Z	5	up	3-argocd	89	0	
+2026-09-17T12:36:32Z	5	up	verify	1235	0	10/10 Applications Synced/Healthy
+2026-09-17T12:36:33Z	5	up	durable	1	0	adopted: 3 [cloudsql/svc-hello-main@2026-09-16T16:54:08Z registry/svc-hello@2026-09-16T16:53:10Z registry/svc-ledger@2026-09-16T17:05:14Z], recreated: 0
+2026-09-17T12:36:33Z	5	up	TOTAL	2131	0	
+2026-09-17T12:38:05Z	6	down	3-argocd	47	0	
+2026-09-17T12:46:53Z	6	down	2-cluster	527	0	
+2026-09-17T12:46:53Z	6	down	TOTAL	577	0	
+2026-09-17T12:47:29Z	6	park	svc-hello-main	34	0	activation policy NEVER
+2026-09-17T12:47:29Z	6	park	TOTAL	35	0	parked: 1, failed: 0

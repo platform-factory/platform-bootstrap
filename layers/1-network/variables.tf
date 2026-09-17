@@ -90,3 +90,21 @@ variable "jumpbox_machine_type" {
   type        = string
   default     = "e2-micro"
 }
+
+# --- Private Services Access (psa.tf) ---------------------------------------
+# The reserved block Google's Cloud SQL producer network peers into. Split
+# into an address and a prefix length rather than one CIDR string because
+# that is the shape google_compute_global_address takes; locals.tf
+# reassembles them into a CIDR for the route list.
+
+variable "psa_range_address" {
+  description = "Start address of the Private Services Access allocated range. Pinned rather than auto-allocated so the block is deterministic across rebuilds and can be written into route lists ahead of time. 10.60.0.0 is clear of every other range in this VPC's plan (subnet 10.10.0.0/20, pods 10.20.0.0/16, services 10.30.0.0/20) and of 2-cluster's control-plane /28 at 172.16.0.0/28, with a readable gap between them."
+  type        = string
+  default     = "10.60.0.0"
+}
+
+variable "psa_range_prefix_length" {
+  description = "Prefix length of the Private Services Access allocated range. 16 is Google's own recommendation for Google services (\"the minimum size is a single /24 block, but the recommended size is a /16 block\", docs.cloud.google.com/vpc/docs/configure-private-services-access, read 2026-09-16), and a /16 costs nothing: the documented quota is on the NUMBER of allocated ranges, explicitly not on the size of each. A /20 would be ample for one region, but the failure mode is asymmetric — growing the range later means either expanding in place (only possible if the adjacent space happens to be free) or a second allocation plus a forced peering update, and once a Cloud SQL instance exists both are blocked by Google's four-day producer-resource retention (see psa.tf). The one real counter-argument: if enable_vpn is ever flipped on, a /16 out of 10.x is more address space to coordinate with the peer network."
+  type        = number
+  default     = 16
+}

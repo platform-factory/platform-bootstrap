@@ -57,6 +57,30 @@ locals {
     # behavior. Same "assume nothing exists" logic as the rest of this list.
     "logging.googleapis.com",    # cluster + NAT logs; the C-23 egress evidence path
     "monitoring.googleapis.com", # GKE metrics + managed Prometheus (auto-enabled by GKE; pinned here on purpose)
+
+    # Added for M2 (C-07: a database from a claim). Both are prerequisites of
+    # a private-IP Cloud SQL instance, and Google's Cloud SQL private-IP page
+    # (read 2026-09-16) names exactly this set — sqladmin, compute,
+    # servicenetworking — as what a new project must have on. Skipping either
+    # fails instance creation with SERVICE_NETWORKING_NOT_ENABLED or
+    # NETWORK_NOT_PEERED, and because the instance is created by Crossplane
+    # rather than Terraform the failure shows up as a managed resource stuck
+    # in an error loop, not as a failed apply.
+    #
+    # servicenetworking is listed HERE while the thing that uses it — the
+    # Private Services Access allocated range and peering — lives in
+    # 1-network. That split is the existing layer rule, not an exception:
+    # layer 0 owns "what this project may do", layer 1 owns reachability,
+    # which persists across cluster rebuilds. Layers apply in order, so the
+    # API is on before 1-network's psa.tf runs.
+    #
+    # The alternative for sqladmin was a ProjectService managed resource from
+    # Crossplane (the kind exists), which would have made it a PR instead of
+    # an apply — rejected because it needs the provider identity to hold
+    # service-usage admin and would make the platform the first thing that
+    # enables APIs for itself. Layer 0 already owns this list; keep it here.
+    "sqladmin.googleapis.com",          # Cloud SQL instances/databases/users created by Crossplane (M2 Database Composition)
+    "servicenetworking.googleapis.com", # Private Services Access peering for private-IP Cloud SQL (1-network/psa.tf)
   ]
 }
 

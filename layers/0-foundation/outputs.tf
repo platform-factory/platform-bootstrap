@@ -38,3 +38,22 @@ output "gke_node_service_account_email" {
   description = "Email of the dedicated GKE node service account (iam.tf). Consumed by 2-cluster's node_config.service_account, via 1-network's passthrough."
   value       = google_service_account.gke_nodes.email
 }
+
+output "crossplane_provider_service_account_email" {
+  description = "Email of the single Google service account the Crossplane GCP providers impersonate (iam.tf). Not consumed by a later Terraform layer — it is the value platform-config puts in each provider's DeploymentRuntimeConfig as the iam.gke.io/gcp-service-account annotation, which is the Kubernetes half of the Workload Identity pair whose IAM half is bound here. Exported so that value is copied from Terraform output rather than retyped."
+  value       = google_service_account.crossplane_provider.email
+}
+
+output "gke_security_group" {
+  description = "Umbrella Google Group for GKE RBAC, or null while it does not exist yet. Passed through 1-network to 2-cluster, which feeds it to authenticator_groups_config — null there renders no block at all, so the cluster builds fine before the Workspace group is created."
+  value       = var.gke_security_group
+}
+
+# THE RULE FOR ANY FUTURE OPTIONAL OUTPUT, learned the hard way on the one
+# above: Terraform drops a null-valued output from state entirely rather than
+# storing it as null, so a downstream layer reading it as a bare attribute
+# (data.terraform_remote_state.<x>.outputs.<name>) fails with "Unsupported
+# attribute" for as long as the value is unset — and `terraform validate`
+# cannot see it coming, because remote-state outputs are unknown until apply.
+# Every consumer of an output that can be null must wrap the read in
+# try(..., null). 1-network/outputs.tf and 2-cluster/locals.tf both do.

@@ -62,3 +62,8 @@ output "cluster_dns_endpoint" {
   description = "DNS-based control plane endpoint. Consumed by 3-argocd to configure the kubernetes/helm providers without depending on an IP allowlist."
   value       = google_container_cluster.primary.control_plane_endpoints_config[0].dns_endpoint_config[0].endpoint
 }
+
+output "gke_security_group" {
+  description = "Passed through from 0-foundation via 1-network. The umbrella Google Group this cluster resolves RBAC group membership against (gke.tf), or null if no group is configured yet. Exported so an operator can answer \"will a RoleBinding on a Google Group work on this cluster?\" from this layer's outputs, without reading back two layers or inspecting the live cluster — the answer is 'only if this is non-null'."
+  value       = local.gke_security_group
+}

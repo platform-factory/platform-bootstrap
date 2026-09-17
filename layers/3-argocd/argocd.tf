@@ -42,8 +42,23 @@ locals {
     }
   }
 
-  # The one piece of Argo CD configuration layer 0 has to own: without it
-  # the app-of-apps in platform-config cannot order its children.
+  # The Argo CD configuration the bootstrap layers have to own, because
+  # Argo CD reads argocd-cm at startup and platform-config is what Argo CD
+  # *syncs* — a setting the sync order depends on cannot itself arrive by
+  # sync. One entry at M1 (the Application health check below, without which
+  # the app-of-apps in platform-config cannot order its children); two more
+  # at M2 (the XR health checks, without which an Application containing
+  # System or Database XRs reports Healthy the INSTANT the objects are
+  # created — Argo CD has no health script for platform.thecloudgeek.io, and
+  # a resource with no health check contributes no health at all, verified
+  # 2026-09-16 against argo-cd v3.4.6 util/lua/lua.go GetHealthScript). Note
+  # the M2 failure is a premature green, not a hang: a reader who expects a
+  # stuck sync will go looking in the wrong place.
+  #
+  # The rule of thumb for this map is that it holds Argo CD's own view of
+  # resource health — the part of Argo's configuration that cannot
+  # meaningfully arrive through the thing Argo syncs. Everything else
+  # belongs in platform-config.
   #
   # Argo CD removed Application from its built-in health checks in 1.8, so
   # by default a parent Application reports Healthy regardless of what its
@@ -56,12 +71,113 @@ locals {
   # (operator-manual/health, "Argocd App"), verified 2026-08-27; it simply
   # reports the child's own status.health back up to the parent.
   #
-  # Belongs here rather than in platform-config because Argo CD reads
-  # argocd-cm at startup and platform-config is what Argo CD *syncs*: a
-  # setting the sync order depends on can't itself arrive by sync.
+  # Health for the platform's own composite resources (M2). Same placement
+  # reasoning as the Application check above: an Application containing
+  # System or Database XRs reports Healthy the moment the objects exist
+  # unless a script says otherwise, so without this the `systems` wave
+  # "completes" while nothing has actually reconciled.
+  #
+  # WHAT THAT ACTUALLY BREAKS, precisely, because the obvious answer is
+  # wrong. It is NOT sync ordering: `systems` is the highest wave in M2
+  # (crossplane 0, crossplane-providers 1, crossplane-platform/kyverno 2,
+  # compositions/kyverno-policies 3, systems 4), so nothing downstream is
+  # gated on it and no later wave can start against a half-built tenant
+  # namespace. What it breaks is the finish line in scripts/cycle.sh, which
+  # blocks until every Application reports Synced AND Healthy and dies on
+  # timeout. Without these entries that gate passes the moment the XR
+  # objects exist, and a cycle gets recorded green with nothing reconciled —
+  # the same false-green class the durable-resource adoption check at the
+  # top of cycle.sh was added to close. The second value is diagnostic:
+  # Crossplane names the stuck composed resource in its Ready message and
+  # the script below passes it through, so the Argo UI says which one.
+  # (Restore the wave-ordering argument only if a wave is ever placed after
+  # `systems`.)
+  #
+  # C-01, stated rather than glossed: this is a Terraform change, and
+  # C-01 counts terraform applies after M1. It rides in the same 3-argocd
+  # apply as the rest of this layer's M2 work so the count stays one
+  # crossing per layer — not free because the layer is disposable.
+  #
+  # WHY ONLY platform.thecloudgeek.io. Argo CD 3.4.6 already ships wildcard
+  # built-ins that cover everything else in play — resource_customizations/
+  # _.crossplane.io/_/health.lua and _.upbound.io/_/health.lua, where the
+  # directory `_` is Argo's stand-in for `*` (verified 2026-09-16 by reading
+  # the v3.4.6 tree and util/lua/lua.go, which does a literal `_`→`*` replace
+  # and then a doublestar match on "<group>/<Kind>"). Those cover the
+  # Crossplane XRD/Composition/Provider objects AND every provider-upjet-gcp
+  # managed resource, because sql.gcp.m.upbound.io ends in .upbound.io. An
+  # entry of ours for those groups would not add anything — it would SHADOW
+  # the built-in, since argocd-cm is checked before the built-ins. So the
+  # only gap is our own XRD group, which ends in .thecloudgeek.io and
+  # matches no built-in.
+  #
+  # WHY TWO ENUMERATED KEYS AND NOT ONE WILDCARD. Argo's own docs
+  # (operator-manual/health.md, v3.4.6): "wildcards are only supported when
+  # using the resource.customizations key, the
+  # resource.customizations.health.<group>_<kind> style keys do not work
+  # since wildcards (*) are not supported in Kubernetes configmap keys."
+  # `*` is not a legal ConfigMap key character, so a key of
+  # `...platform.thecloudgeek.io_*` would be silently ignored — no error,
+  # just XRs stuck Progressing forever. Two kinds is two lines; a third XRD
+  # is a one-line PR.
+  #
+  # THE SCRIPT. Crossplane XRs publish exactly two conditions, Synced and
+  # Ready (docs.crossplane.io/v2.3, composite-resources). Synced is checked
+  # FIRST and wins, because Crossplane can set Synced=False and Ready=False
+  # at the same time and a single loop would then be order-dependent: a
+  # Composition that cannot render is a Degraded thing an operator must go
+  # look at, not a Progressing thing that will resolve itself. When Ready is
+  # False, Crossplane's message names the unready composed resources
+  # ("Unready resources: quota, rolebinding, ..."), so passing it through
+  # verbatim is what makes the Argo UI say WHICH resource is stuck instead
+  # of just that something is.
+  #
+  # Lua sandbox constraint, verified 2026-09-16 against argo-cd v3.4.6
+  # util/lua/lua.go: scripts from argocd-cm run with useOpenLibs = false,
+  # which still opens base, table, package and a safe os — but NOT the
+  # string library. So `..` concatenation is available and string.format is
+  # not. Do not "tidy" this into string.format; it would fail at runtime.
+  xr_health_lua = <<-LUA
+    local hs = {}
+    hs.status = "Progressing"
+    hs.message = "Waiting for the composition to reconcile"
+
+    if obj.status == nil or obj.status.conditions == nil then
+      return hs
+    end
+
+    for _, c in ipairs(obj.status.conditions) do
+      if c.type == "Synced" and c.status == "False" then
+        hs.status = "Degraded"
+        hs.message = (c.reason or "SyncFailed") .. ": " .. (c.message or "")
+        return hs
+      end
+    end
+
+    for _, c in ipairs(obj.status.conditions) do
+      if c.type == "Ready" then
+        if c.status == "True" then
+          hs.status = "Healthy"
+          hs.message = "Resource is up to date"
+        else
+          hs.status = "Progressing"
+          hs.message = (c.reason or "Creating") .. ": " .. (c.message or "")
+        end
+        return hs
+      end
+    end
+
+    return hs
+  LUA
+
   argocd_cm = {
     configs = {
       cm = {
+        # One entry per XRD kind — see local.xr_health_lua for why this
+        # cannot be a wildcard and why no *.upbound.io entry belongs here.
+        "resource.customizations.health.platform.thecloudgeek.io_System"   = local.xr_health_lua
+        "resource.customizations.health.platform.thecloudgeek.io_Database" = local.xr_health_lua
+
         "resource.customizations.health.argoproj.io_Application" = <<-LUA
           hs = {}
           hs.status = "Progressing"
