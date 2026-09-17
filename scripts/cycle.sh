@@ -289,12 +289,18 @@ run_layer() {
 # one go, so without it "2026-09-16T05:34:56.789-07:00" would come back as a
 # perfectly valid-looking 14 digits of LOCAL time — a 7-hour skew biased
 # toward reading a resource as older, i.e. adopted, which is again the error
-# direction that hides the bug. Both APIs emit Zulu today (sqladmin v1beta4
+# direction that hides the bug. Both APIs emit Zulu (sqladmin v1beta4
 # documents "2012-11-15T16:19:00.094Z"; Artifact Registry's createTime is a
-# protobuf Timestamp, which marshals as Zulu), so this is a guard against
-# drift rather than a live bug. Anything else — an offset form, an empty
-# value — comes back with a length other than 14 and the caller counts it as
-# unknown rather than guessing.
+# protobuf Timestamp, which marshals as Zulu) — but the guard earned its keep
+# on the very first M2 run (2026-09-16): `gcloud artifacts repositories list`
+# carries a display transform that rewrites createTime into LOCAL time with
+# NO zone suffix even under --format=value(...), so both registries came back
+# as "2026-09-16T09:53:10" for a repository created at 16:53:10Z, and landed
+# in `unknown`. The two list calls below now force UTC explicitly with
+# .date(format=..., tz=UTC) rather than trusting what gcloud prints by
+# default. Anything that still is not Zulu — an offset form, an empty value —
+# comes back with a length other than 14 and the caller counts it as unknown
+# rather than guessing.
 ts_to_int() {
   [[ "$1" == *Z ]] || { printf ''; return 0; }
   local t="${1%%.*}"
@@ -365,7 +371,7 @@ record_durable_adoption() {
   sql_rows="$(gcloud sql instances list \
     --project "$PROJECT_ID" \
     --filter="settings.userLabels.${SYSTEM_LABEL}:*" \
-    --format="value(name,createTime)" 2>/dev/null)" || list_rc=1
+    --format="value(name,createTime.date(format='%Y-%m-%dT%H:%M:%SZ',tz=UTC))" 2>/dev/null)" || list_rc=1
 
   # --location pins this to one region. Without it gcloud fans out across
   # every Artifact Registry location, which is a handful of extra API calls
@@ -376,7 +382,7 @@ record_durable_adoption() {
     --project "$PROJECT_ID" \
     --location "$REGION" \
     --filter="labels.${SYSTEM_LABEL}:*" \
-    --format="value(name.basename(),createTime)" 2>/dev/null)" || list_rc=1
+    --format="value(name.basename(),createTime.date(format='%Y-%m-%dT%H:%M:%SZ',tz=UTC))" 2>/dev/null)" || list_rc=1
 
   local up_int; up_int="$(ts_to_int "$up_start_utc")"
 
