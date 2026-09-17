@@ -775,9 +775,23 @@ This repo is built out in **M1** and extended in **M2**.
 
 ## Status
 
-**Status:** M2 — **applied on 2026-09-16.** All four layers now carry their M2
-changes, and the two persistent layers were applied by hand while the two
-disposable ones came back on the normal `cycle.sh up`.
+**Status:** M2 — **applied on 2026-09-16, and rebuilt clean on 2026-09-17.**
+All four layers now carry their M2 changes, and the two persistent layers were
+applied by hand while the two disposable ones came back on the normal
+`cycle.sh up`.
+
+**The first clean M2 cycle (cycle 5, 2026-09-17), zero manual steps:** `down`
+10m42s, `park` 55s (it found the Cloud SQL instance by its `system` label and
+stopped it), `up` 35m31s — cluster 801s, Argo CD 89s, then a 1235s wait for
+10/10 Applications. The adoption check recorded `adopted: 3, recreated: 0`:
+the Cloud SQL instance and both registries came back as themselves, not as
+fresh empty copies. Nothing unparks: Crossplane restarted the parked instance
+by itself about twenty seconds after the claim synced on the new cluster.
+That `up` is roughly twice M1's, and about twenty minutes of it is a database
+restarting and a tenant that is not Healthy until its database is — the
+rebuild is no longer from empty, and ADR-0015 said the number would show it.
+The session ended with `down` and `park` (cycle 6): nothing billable by the
+hour is left running.
 
 **Layer 0 (`0-foundation`) — 14 added, 0 changed, 0 destroyed.** The identity
 the platform's GitOps side needs in order to create anything in the cloud, and
