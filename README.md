@@ -3,8 +3,12 @@
 Terraform layer 0 for the Platform Factory reference implementation: the
 cloud project, network, GKE cluster, workload identity, and Argo CD itself.
 Once Argo CD is running and pointed at [platform-config](https://github.com/platform-factory/platform-config),
-this repo's job is done — everything from there on is managed via GitOps,
-not Terraform.
+everything inside the cluster is GitOps's job — tenants, services,
+databases, policy, routes. Terraform's job here does not end, though; it
+recurs. A new platform capability that needs cloud identity or network
+reachability is a Terraform crossing, declared before the milestone that
+needs it and bundled into one apply per layer (ADR-0016 §7 in the design
+seed). The ones that needed their own apply are counted in Status, below.
 
 ## Why (the mental model)
 
@@ -43,9 +47,16 @@ That's the reasoning behind four layers instead of one Terraform root:
 | Layer | Owns | Cost to leave running | Torn down between sessions? |
 |---|---|---|---|
 | `0-foundation` | GCP project, enabled APIs, the Terraform state bucket | ~$0 | No — stays up |
-| `1-network` | VPC, subnet, baseline firewall, Cloud NAT, the Tailscale subnet-router jump box, and a gated VPN gateway/tunnels/BGP to a peer network | A few dollars a month (the always-on e2-micro jump box; an idle NAT gateway is ~$0, and the VPN adds a small hourly cost only if enabled) | No — stays up |
+| `1-network` | VPC, subnet, baseline firewall, Cloud NAT, the Tailscale subnet-router jump box, and a gated VPN gateway/tunnels/BGP to a peer network | ~$5/month, effectively all of it Cloud NAT (one attached VM between sessions); the e2-micro jump box is free-tier, and the VPN adds an hourly cost only if `enable_vpn` is true | No — stays up |
 | `2-cluster` | The regional GKE cluster (private nodes, DNS-based control-plane endpoint) and its node pool | ~$0.50/hr while it exists (regional control-plane fee + on-demand nodes) | Yes |
 | `3-argocd` | Argo CD itself, running on the cluster | Free (rides on 2-cluster) | Yes, alongside 2-cluster |
+
+The `1-network` number is Cloud NAT list pricing — $0.0014/hr per attached
+VM plus $0.005/hr for the external IP (`layers/1-network/nat.tf`, verified
+2026-08-20) — so it rises if anything else always-on lands in this VPC. The
+jump box itself is free: one non-preemptible e2-micro plus 30 GB standard
+disk in us-central1 is inside Google's always-free tier
+(`layers/1-network/jumpbox.tf`, verified 2026-08-20).
 
 Each layer is applied and destroyed independently, with its own Terraform
 state. Each layer reads facts it needs from the layer directly below it via
@@ -97,7 +108,23 @@ PNG).
   ```
   gcloud auth application-default login
   ```
+- [kubectl](https://kubernetes.io/docs/tasks/tools/), plus GKE's auth plugin:
+  ```
+  gcloud components install kubectl gke-gcloud-auth-plugin
+  ```
+  Needed from the moment there is a cluster, not just to look around:
+  `scripts/cycle.sh` refuses to start without it — its preflight checks for
+  `terraform`, `gcloud` and `kubectl`, and dies on the first one missing —
+  and its verify step decides whether an `up` passed by reading
+  `kubectl get applications -n argocd`. The plugin is what the kubeconfig
+  written by `gcloud container clusters get-credentials` calls out to for a
+  token; if you install kubectl from Homebrew or kubernetes.io instead,
+  install the plugin on its own
+  (`gcloud components install gke-gcloud-auth-plugin`).
 - A GCP billing account you can link a new project to.
+- Step E of the M2 runbook also needs Docker with `buildx` and `make`; those
+  belong to the `svc-hello` clone, not to this repo, and its README carries
+  them.
 - Nothing about where you are sitting. The cluster's control plane is
   reached by its DNS-based endpoint and authorized by IAM, so there is no
   address to look up and no allowlist to keep current (ADR-0011).
@@ -244,7 +271,11 @@ is reachable by a single `terraform apply`, and the order below is not a
 preference — each step is a hard prerequisite of the one after it. This is the
 consolidated list; the reasoning behind each line lives in the file it touches.
 It is written as the order that **actually worked** on 2026-09-16, not the
-order that looked right beforehand.
+order that looked right beforehand. Literal values below —
+`platform-factory-ref`, `thecloudgeek.io` — are this build's; substitute
+your own. Step G's SSH command reads the jump box's name and zone from
+`terraform output` rather than naming them; every other command here spells
+its values out.
 
 > **One rule cuts across every Terraform step here: plan a layer only after the
 > layer below it has been applied.** A plan generated earlier reads the lower
@@ -426,7 +457,9 @@ M4 is meant to remove.
 `private_ranges` and an already-joined jump box does not pick it up:
 
 ```
-gcloud compute ssh platform-factory-ref-jumpbox --tunnel-through-iap --zone us-central1-a
+gcloud compute ssh $(terraform -chdir=layers/1-network output -raw jumpbox_name) \
+  --tunnel-through-iap \
+  --zone $(terraform -chdir=layers/1-network output -raw jumpbox_zone)
 # on the box, run this layer's output verbatim:
 terraform -chdir=layers/1-network output -raw jumpbox_tailscale_up_command
 ```
@@ -498,7 +531,8 @@ running, still small in absolute terms because of the rhythm below.
 Destroy in the reverse order you applied, and stop at `2-cluster` —
 `1-network` and `0-foundation` both stay up on purpose (the VPN connection
 in particular is exactly the thing that shouldn't be rebuilt every session
-— see "Why" above) and cost close to **$0** idle:
+— see "Why" above) and, with `enable_vpn` false, cost about **$5/month**
+idle, effectively all of it Cloud NAT:
 
 ```
 cd layers/3-argocd
@@ -555,6 +589,28 @@ phase, layer, seconds, exit code, note) — wall-clock down and up, per layer,
 across every run. That file is the evidence, so it's committed rather than
 gitignored. Since M2 it also carries an `up`/`durable` row per rebuild and a
 `park` row per instance; both are explained below.
+
+**How to read `cycle-results.tsv`.** Rows are exactly what the harness
+wrote, never edited after the fact — that is what makes the file evidence.
+Three things a reader needs. A row's timestamp is when that phase **ended**,
+not when it began. A `TOTAL` row measures **one invocation**, not one cycle:
+a failed `up` records its own layer row and then dies, so it never writes a
+TOTAL, and the `up` that resumes the cycle restarts the timer. Cycle 1 is
+the only place in this file where that happened — `3-argocd` exited 1 at
+`16:54:45Z` on a stale residential-IP allowlist, the four rows after it are
+the resumed run (two layer rows, then `verify` and `TOTAL`), and its
+`TOTAL 133` therefore covers the resume only. A clean cycle-1 `up` is
+753 + 87 + 12 = **852s (~14m12)**, which is the cycle-1 figure the M1 build
+log's C-02 table carries. Cycle 1 predates the label; since then a resumed
+`up` says so itself, writing `resumed run; TOTAL covers this invocation
+only` in its TOTAL row's note. The timestamps are self-checking **inside one
+invocation**: subtract a row's `seconds` from its timestamp and it starts a
+second or two after the row before it ended. Between invocations the gap is
+however long the operator took — the 111 seconds spent fixing the tfvars in
+cycle 1, or the hours and weeks between a `down` and the `up` that resumes
+its cycle. That is why `TOTAL 133` at `16:58:47Z` lands on `16:56:34Z`, the
+start of the second `up`, and not on the failed one. See commit `f7bd77a`
+for the full account.
 
 Cycle numbers come from that file, not from you: `down` opens cycle
 *last + 1*, `up` continues the last cycle if it has a `down` but no `up`
@@ -686,13 +742,15 @@ cluster is down.
 
 ## What Terraform deliberately does NOT manage
 
-Once `3-argocd` finishes, Terraform's job here is over. Everything from
-that point on — application workloads, namespaces beyond `argocd`'s own,
-Gateway API routes, Kyverno policies, External Secrets Operator wiring, DNS
-records, anything else `platform-config`'s Argo CD Applications declare —
-is GitOps's job, synced by Argo CD from that repo, not applied by
-`terraform apply` here. That split is the point of layer 0: get just enough
-running that GitOps can take over, then stop.
+Once `3-argocd` finishes, Terraform stops managing what runs inside the
+cluster. Everything from that point on — application workloads, namespaces
+beyond `argocd`'s own, Gateway API routes, Kyverno policies, External
+Secrets Operator wiring, DNS records, anything else `platform-config`'s
+Argo CD Applications declare — is GitOps's job, synced by Argo CD from that
+repo, not applied by `terraform apply` here. That split is the point of
+layer 0: get just enough running that GitOps can take over, then stop. What
+Terraform keeps is the crossing: identity and reachability for a new
+platform capability, declared and bundled per layer (ADR-0016 §7).
 
 ## Posture
 
@@ -785,6 +843,9 @@ All four layers now carry their M2 changes, and the two persistent layers were
 applied by hand while the two disposable ones came back on the normal
 `cycle.sh up`.
 
+**Still open here:** codifying or disabling the three hand-enabled APIs; the
+tailnet route for the PSA range (Runbook step 5G).
+
 **The first clean M2 cycle (cycle 5, 2026-09-17), zero manual steps:** `down`
 10m42s, `park` 55s (it found the Cloud SQL instance by its `system` label and
 stopped it), `up` 35m31s — cluster 801s, Argo CD 89s, then a 1235s wait for
@@ -848,14 +909,11 @@ two registry repositories, whose timestamps it could not parse.
 `gcloud artifacts repositories list` rewrites `createTime` into local time with
 no zone even under `--format=value()`, so the check's own Zulu guard counted
 both as `unknown` and, as designed for any unknown, exited 1. Fixed by forcing
-UTC
-(commit `88129e7`); no rebuild has run since, so `cycle-results.tsv` has no
-row yet that exercises the fix.
+UTC (commit `88129e7`), and cycle 5 exercised it on 2026-09-17: its
+`durable` row reads `adopted: 3, recreated: 0`, exits 0, and stamps all
+three timestamps in Zulu.
 
-Still open here: one parked rebuild (`down` → `park` → `up`) for an honest
-C-02 number and for adoption-after-teardown; codifying or disabling the three
-hand-enabled APIs; the tailnet route for the PSA range (Runbook step 5G). The
-cluster and the Cloud SQL instance were left **running** overnight
+The cluster and the Cloud SQL instance were left **running** overnight
 2026-09-16→17 — a real cost — because the session's cloud credentials expired.
 
 Everything below is M1 and has been exercised.
