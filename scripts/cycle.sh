@@ -167,6 +167,8 @@ assert_disposable() {
 }
 
 preflight() {
+  # These three are the repo's real prerequisites. README "Prerequisites"
+  # must match this block.
   command -v terraform >/dev/null || die "terraform not found on PATH"
   command -v gcloud    >/dev/null || die "gcloud not found on PATH"
   command -v kubectl   >/dev/null || die "kubectl not found on PATH"
@@ -220,6 +222,31 @@ cycle_for_up() {
     fi
   fi
   echo $(( last + 1 ))
+}
+
+# A resumed `up`: this cycle already has `up` layer rows from an earlier
+# invocation that died before writing its TOTAL. The TOTAL this run writes
+# then covers only this invocation, so the row says so. This is NOT the same
+# question cycle_for_up answers — that branch also covers a `down` one
+# evening and a clean `up` the next morning, whose TOTAL is honest and must
+# not be labelled.
+up_is_resume() {
+  local c="$1"
+  [[ -f "$RESULTS_FILE" ]] || return 1
+  awk -F'\t' -v c="$c" '
+    NR > 1 && ($2 + 0) == c && $3 == "up" && $4 != "TOTAL" && $4 != "durable" { n++ }
+    END { exit n > 0 ? 0 : 1 }' "$RESULTS_FILE"
+}
+
+# A TOTAL row's note is a list, not a single fact, so additions join with
+# "; " instead of overwriting each other.
+append_note() {
+  local existing="$1" addition="$2"
+  if [[ -n "$existing" ]]; then
+    printf '%s; %s' "$existing" "$addition"
+  else
+    printf '%s' "$addition"
+  fi
 }
 
 # .terraform/ is gitignored and disposable, so re-init every time rather than
@@ -695,7 +722,7 @@ do_down() {
 }
 
 do_up() {
-  local cycle_n="${1:-0}"
+  local cycle_n="${1:-0}" total_note="${2:-}"
   log "UP — rebuilding disposable layers"
   local start up_start_utc
   start=$SECONDS
@@ -708,7 +735,7 @@ do_up() {
   run_layer "$cycle_n" "up" "2-cluster" "apply"
   run_layer "$cycle_n" "up" "3-argocd" "apply"
   verify_up "$cycle_n" "$up_start_utc"
-  record "$cycle_n" "up" "TOTAL" "$(( SECONDS - start ))" 0
+  record "$cycle_n" "up" "TOTAL" "$(( SECONDS - start ))" 0 "$total_note"
   log "UP complete in $(( (SECONDS - start) / 60 ))m $(( (SECONDS - start) % 60 ))s"
 }
 
@@ -730,7 +757,12 @@ main() {
     down)
       preflight; do_down "$(next_cycle_number)" ;;
     up)
-      preflight; do_up "$(cycle_for_up)" ;;
+      preflight
+      local c note=""
+      c="$(cycle_for_up)"
+      up_is_resume "$c" \
+        && note="$(append_note "$note" "resumed run; TOTAL covers this invocation only")"
+      do_up "$c" "$note" ;;
     cycle)
       preflight
       local n="${2:-1}"
