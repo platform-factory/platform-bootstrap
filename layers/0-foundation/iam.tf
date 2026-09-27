@@ -396,6 +396,48 @@ resource "google_project_iam_member" "crossplane_provider_project_iam_admin" {
 }
 
 # ---------------------------------------------------------------------------
+# M2b: the Config Connector engine's identity (ADR-0017 §1, ADR-0018).
+# ---------------------------------------------------------------------------
+#
+# The new engine runs under one Google service account, as Crossplane's did:
+# Config Connector in cluster mode names it in its ConfigConnector object
+# (platform-config/config-connector/configconnector.yaml).
+#
+# ONLY THE IDENTITY LIVES HERE. Its permissions do not: they are the files and
+# grants in the platform-roles repo, approved by security and applied by a
+# person (ADR-0018 §1). Layer 0 says "this identity exists"; platform-roles
+# says "this is everything it may do". So there is no role binding for this
+# account on this page, and none may be added here: one stray grant would sit
+# outside the list security reviews.
+#
+# ADDITIVE, like every M2b change in this repo (ADR-0017 §1). The Crossplane
+# identity above, its grants and its bindings all stay until the engine swap's
+# rollback leg has run, because this repo is not selected by branch and a
+# Crossplane rebuild has to keep working. They leave in a later apply.
+#
+# The name matters twice. `config-connector` is 16 characters, inside the
+# 6-30 GCP allows. And a System of the same name would adopt this account by
+# name, so charts/system in platform-config refuses it as a System name.
+resource "google_service_account" "config_connector" {
+  project    = google_project.this.project_id
+  account_id = "config-connector"
+
+  # Bytes, not characters: § is 2. Well under the 100-byte limit.
+  display_name = "Config Connector engine identity (ADR-0017 §1)"
+}
+
+# The Workload Identity binding: Config Connector's controller, in cluster
+# mode, runs as the Kubernetes service account cnrm-controller-manager in
+# cnrm-system, and this is the only binding its install needs [C, Config
+# Connector manual-install doc, cited in ADR-0017 §1]. The operator creates
+# that Kubernetes service account and its annotation; this is the IAM half.
+resource "google_service_account_iam_member" "config_connector_workload_identity" {
+  service_account_id = google_service_account.config_connector.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "serviceAccount:${google_project.this.project_id}.svc.id.goog[cnrm-system/cnrm-controller-manager]"
+}
+
+# ---------------------------------------------------------------------------
 # M2: the one cloud IAM grant that tenancy needs (ADR-0012 §5).
 # ---------------------------------------------------------------------------
 #

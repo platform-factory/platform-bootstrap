@@ -44,6 +44,11 @@ output "crossplane_provider_service_account_email" {
   value       = google_service_account.crossplane_provider.email
 }
 
+output "config_connector_service_account_email" {
+  description = "Email of the Config Connector engine's Google service account (iam.tf, ADR-0017 §1). Read by the platform-roles repo through terraform_remote_state, which grants it its roles (ADR-0018 §1); platform-config names it in its ConfigConnector object."
+  value       = google_service_account.config_connector.email
+}
+
 output "gke_security_group" {
   description = "Umbrella Google Group for GKE RBAC, or null while it does not exist yet. Passed through 1-network to 2-cluster, which feeds it to authenticator_groups_config — null there renders no block at all, so the cluster builds fine before the Workspace group is created."
   value       = var.gke_security_group

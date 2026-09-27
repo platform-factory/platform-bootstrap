@@ -81,6 +81,16 @@ locals {
     # enables APIs for itself. Layer 0 already owns this list; keep it here.
     "sqladmin.googleapis.com",          # Cloud SQL instances/databases/users created by Crossplane (M2 Database Composition)
     "servicenetworking.googleapis.com", # Private Services Access peering for private-IP Cloud SQL (1-network/psa.tf)
+
+    # Added for M2b (ADR-0019 §5). Nothing in the platform calls it: it is
+    # what the operator's fourth pre-session read needs. Policy Analyzer
+    # (`gcloud asset analyze-iam-policy`) answers "what can the engine's
+    # identity actually do", across every allow policy at or below the
+    # organisation, which the project-level reads of ADR-0018 §6 cannot see.
+    # Enabled in the same layer-0 apply ADR-0017 §1 already declares for the
+    # engine's identity, so it is not a new crossing. Harmless for a
+    # Crossplane rebuild: an enabled API does nothing until something calls it.
+    "cloudasset.googleapis.com",
   ]
 }
 

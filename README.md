@@ -140,6 +140,9 @@ authorized by IAM. Nothing to configure and nothing to keep current:
 gcloud container clusters get-credentials <cluster> --region <region> --dns-endpoint
 ```
 
+`scripts/cycle.sh` fetches its credentials the same way, so the harness
+measures the access path this section documents.
+
 **Data plane (apps, SSH, databases on private IPs).** The jump box in
 `1-network` runs a Tailscale subnet router advertising the VPC's private
 ranges, so a private address is reachable directly — `psql -h 10.x.x.x` — from
@@ -309,7 +312,9 @@ gcloud services enable cloudidentity.googleapis.com --project=platform-factory-r
 > three APIs enabled by hand on 2026-09-16 rather than in
 > `0-foundation/main.tf` — the other two, `policytroubleshooter` and
 > `cloudasset`, were diagnostics for the IAM question in `systems/README.md`.
-> Codifying all three here or switching them off again is open work.
+> `cloudasset` is now in `0-foundation/main.tf`, because M2b's pre-session
+> read of the engine's permissions uses it (ADR-0019 §5); codifying the other
+> two or switching them off again is still open work.
 
 ```
 gcloud identity groups create gke-security-groups@thecloudgeek.io \
@@ -583,6 +588,23 @@ things the manual version can't:
    the root: Argo CD stopped counting child Applications toward a parent's
    health in 1.8, so a root-only check can pass while Crossplane underneath
    it is still failing.
+
+**What changed for M2b.** The engine swap (ADR-0017) is tested forward to
+Config Connector and back to Crossplane with this one script, because this
+repo is not selected by branch. So every change to it stays additive and reads
+the same on both engines, and `scripts/test-cycle.sh` feeds its new functions
+Application lists in both shapes, at the desk. `up` now also:
+
+- **waits for every tenant**, not only every Application. It counts the tenant
+  files in the `systems` repo, through GitHub's public API, and is not done
+  until that many Systems have Applications. On Config Connector the tenants'
+  Applications come from an ApplicationSet whose own health says nothing
+  about them, so one that generated nothing would otherwise pass. If the
+  count cannot be read, the verify row says so and `up` waits for
+  Applications only.
+- **records the revision it built from** on the verify row: the root
+  Application's target and the commit Argo CD synced. A build from the M2b
+  branch and one from `main` look the same otherwise (ADR-0017 §12).
 
 Each phase is appended to `scripts/cycle-results.tsv` (timestamp, cycle,
 phase, layer, seconds, exit code, note) — wall-clock down and up, per layer,
