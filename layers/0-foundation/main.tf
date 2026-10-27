@@ -91,6 +91,26 @@ locals {
     # engine's identity, so it is not a new crossing. Harmless for a
     # Crossplane rebuild: an enabled API does nothing until something calls it.
     "cloudasset.googleapis.com",
+
+    # Added for M3b (ADR-0021 §12), the layer-0 half of the edge crossings.
+    # certificatemanager: the DNS authorization, the Google-managed
+    # certificate and the certificate map the external Gateway attaches by
+    # annotation (1-network/edge_certs.tf). dns: the public zone, the private
+    # zone and their records (1-network/dns.tf). Neither was on this list
+    # before; the 2026-10-27 plan shows both as additions.
+    #
+    # NOT added, on purpose: networkservices.googleapis.com. ADR-0021 §12 says
+    # "if needed". GKE's "Deploying Gateways" page (read 2026-10-27) lists the
+    # GKE API as the only API prerequisite, a proxy-only subnet for the
+    # regional class, and does not mention networkservices or Traffic
+    # Director; the "Secure a Gateway" page (same date) attaches a
+    # Certificate Manager map by the networking.gke.io/certmap annotation and
+    # names no other API either. [I: neither page rules it out for a
+    # single-cluster Gateway, they are silent. If the first Gateway sits in
+    # a failed state naming networkservices, add it here; it is a one-line
+    # change and one more layer-0 apply, counted by C-01.]
+    "certificatemanager.googleapis.com", # certificate, DNS authorization, certificate map (1-network/edge_certs.tf)
+    "dns.googleapis.com",                # Cloud DNS zones and records (1-network/dns.tf)
   ]
 }
 
