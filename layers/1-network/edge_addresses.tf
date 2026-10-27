@@ -41,27 +41,12 @@ resource "google_compute_subnetwork" "proxy_only" {
   role          = "ACTIVE"
 }
 
-# NOT in ADR-0021 §12, added because an NEG-backed load balancer cannot work
-# without it: the existing allow_internal rule admits only the subnet, pod and
-# Service ranges, so neither the internal Gateway's proxies (proxy-only
-# range) nor either Gateway's health checks (Google's documented check ranges
-# 35.191.0.0/16 and 130.211.0.0/22) can reach a pod. GKE's pages read on
-# 2026-10-27 are silent on whether the Gateway controller adds these itself
-# [I], so this states them; a duplicate allow is harmless. TCP only, ingress
-# only. Delete this resource if the first Gateway proves the controller makes
-# its own.
-resource "google_compute_firewall" "allow_lb_to_pods" {
-  name        = "${var.network_name}-allow-lb"
-  description = "Edge load balancers (proxy-only subnet and Google health checks) to backends."
-  network     = google_compute_network.vpc.id
-
-  allow {
-    protocol = "tcp"
-  }
-
-  source_ranges = [
-    var.proxy_only_cidr,
-    "35.191.0.0/16",
-    "130.211.0.0/22",
-  ]
-}
+# No firewall rule for the load balancers here. GKE's "Automatically created
+# firewall rules" page [C, docs.cloud.google.com/kubernetes-engine/docs/
+# concepts/firewall-rules, read 2026-10-27] lists `gkegw1-l7-<network>-<region
+# or global>`, from 35.191.0.0/16, 130.211.0.0/22 and the proxy-only ranges to
+# TCP 1-65535, which "The Gateway controller creates ... when the first Gateway
+# resource is created". The same page says that under Shared VPC the Gateway
+# rules are not deployed automatically; this VPC is not shared. The first
+# Gateway reads the rule from the project. If it is missing, the rule is added
+# then as a crossing ADR-0021 §12 did not declare, and C-01 counts it.
