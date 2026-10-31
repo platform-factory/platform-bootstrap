@@ -45,3 +45,27 @@ timestamp_utc	cycle	phase	layer	seconds	exit_code	note
 2026-09-17T12:46:53Z	6	down	TOTAL	577	0	
 2026-09-17T12:47:29Z	6	park	svc-hello-main	34	0	activation policy NEVER
 2026-09-17T12:47:29Z	6	park	TOTAL	35	0	parked: 1, failed: 0
+2026-10-27T20:01:40Z	6	up	2-cluster	740	0	
+2026-10-27T20:03:58Z	6	up	3-argocd	129	0	
+2026-10-27T20:24:20Z	6	up	verify	1218	0	11/11 Applications Synced/Healthy; 3/3 tenants have Applications; root at crossplane (dd6730c)
+2026-10-27T20:24:22Z	6	up	durable	1	0	adopted: 5 [cloudsql/svc-hello-second@2026-10-19T22:34:08Z cloudsql/svc-hello-main@2026-09-16T16:54:08Z registry/svc-hello@2026-09-16T16:53:10Z registry/svc-ledger@2026-09-16T17:05:14Z registry/svc-onboard@2026-10-19T22:32:45Z], recreated: 0
+2026-10-27T20:24:22Z	6	up	TOTAL	2106	0	
+2026-10-27T20:26:25Z	7	down	3-argocd	91	0	
+2026-10-27T20:36:53Z	7	down	2-cluster	627	0	
+2026-10-27T20:36:53Z	7	down	TOTAL	720	0	
+2026-10-27T23:51:47Z	7	park	svc-hello-second	11	0	activation policy NEVER
+2026-10-27T23:52:42Z	7	park	svc-hello-main	55	0	activation policy NEVER
+2026-10-27T23:52:42Z	7	park	TOTAL	67	0	parked: 2, failed: 0
+2026-10-29T05:44:22Z	7	up	2-cluster	612	0	
+2026-10-29T05:46:20Z	7	up	3-argocd	116	0	
+2026-10-29T06:06:45Z	7	up	verify	1222	0	13/13 Applications Synced/Healthy; 3/3 tenants have Applications; root at main (e8eedeb)
+2026-10-29T06:06:49Z	7	up	durable	1	0	adopted: 5 [cloudsql/svc-hello-second@2026-10-19T22:34:08Z cloudsql/svc-hello-main@2026-09-16T16:54:08Z registry/svc-hello@2026-09-16T16:53:10Z registry/svc-ledger@2026-09-16T17:05:14Z registry/svc-onboard@2026-10-19T22:32:45Z], recreated: 0
+2026-10-29T06:06:49Z	7	up	TOTAL	1960	0	
+2026-10-29T06:36:40Z	8	down	3-argocd	40	1	
+2026-10-29T06:37:36Z	8	park	svc-hello-second	55	0	activation policy NEVER
+2026-10-29T06:38:31Z	8	park	svc-hello-main	55	0	activation policy NEVER
+2026-10-29T06:39:27Z	8	park	svc-scratch-main	56	0	activation policy NEVER
+2026-10-29T06:39:27Z	8	park	TOTAL	167	0	parked: 3, failed: 0
+2026-10-29T06:40:32Z	9	down	3-argocd	56	0	
+2026-10-29T06:50:11Z	9	down	2-cluster	578	0	
+2026-10-29T06:50:11Z	9	down	TOTAL	636	0	
