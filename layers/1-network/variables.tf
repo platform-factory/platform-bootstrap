@@ -108,3 +108,29 @@ variable "psa_range_prefix_length" {
   type        = number
   default     = 16
 }
+
+# --- The edge (M3b, ADR-0021) ------------------------------------------------
+
+variable "edge_domain" {
+  description = "The environment's public DNS name (ADR-0004's <service-class>.<env>.<domain> schema, ADR-0021 §5). The public zone is this name; the private zone is \"internal.\" in front of it; the Gateways' hostnames are <host>.<edge_domain> and <host>.internal.<edge_domain>. Delegating this name from the parent zone (Cloudflare) is a manual step, recorded and not in Terraform."
+  type        = string
+  default     = "ref.thecloudgeek.io"
+}
+
+variable "proxy_only_cidr" {
+  description = "Range of the regional proxy-only subnet (purpose REGIONAL_MANAGED_PROXY, role ACTIVE) that gke-l7-rilb's Envoy proxies run in (ADR-0021 §4). 10.40.0.0/23 is clear of every other range in this VPC's plan (subnet 10.10.0.0/20, pods 10.20.0.0/16, services 10.30.0.0/20, PSA 10.60.0.0/16) and of 2-cluster's control-plane /28 at 172.16.0.0/28. /23 is Google's recommended size for production (512 addresses; the minimum is /26). Only one ACTIVE proxy-only subnet may exist per region per VPC, so this is the region's only one; it cannot be resized in place."
+  type        = string
+  default     = "10.40.0.0/23"
+}
+
+variable "restart_alert_threshold" {
+  description = "C-12's alert fires when any one namespace's containers restart more than this many times within restart_alert_window_seconds (kubernetes.io/container/restart_count, summed per namespace). The synthetic incident on svc-hello (a restart loop) must cross it; steady state must not."
+  type        = number
+  default     = 3
+}
+
+variable "restart_alert_window_seconds" {
+  description = "Alignment window, in seconds, for the restart-count delta in C-12's alert policy."
+  type        = number
+  default     = 600
+}

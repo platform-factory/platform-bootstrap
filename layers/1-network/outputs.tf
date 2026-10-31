@@ -125,3 +125,83 @@ output "network_path" {
   description = "Fully-qualified VPC path, \"projects/<project>/global/networks/<name>\". This is the exact string Crossplane's Database Composition needs for DatabaseInstance settings.ipConfiguration.privateNetwork. Emitted here so the value has one source of truth in Terraform even though platform-config spells it as a literal — a Composition cannot read Terraform state, so the two are kept in sync by this output being the thing that changes first if the VPC is ever renamed."
   value       = google_compute_network.vpc.id
 }
+
+# --- The edge (M3b, ADR-0021). Read by platform-config's `edge` Application
+# and the route chart, by hand: these are the names the Gateways' NamedAddress,
+# the certmap annotation and GCPBackendPolicy refer to. Not consumed by a later
+# Terraform layer.
+
+output "edge_domain" {
+  description = "The environment's public DNS name; the external route hostname is <host>.<edge_domain>."
+  value       = var.edge_domain
+}
+
+output "edge_public_zone_name" {
+  description = "Cloud DNS managed zone name of the public zone."
+  value       = google_dns_managed_zone.public.name
+}
+
+output "edge_public_zone_name_servers" {
+  description = "The public zone's name servers. Only known after apply. Paste them into Cloudflare as NS records for the zone name, the one manual delegation step (ADR-0021 §5); until that is done the managed certificate stays in PROVISIONING."
+  value       = google_dns_managed_zone.public.name_servers
+}
+
+output "edge_private_zone_name" {
+  description = "Cloud DNS managed zone name of the private zone (internal.<edge_domain>), bound to the VPC."
+  value       = google_dns_managed_zone.private.name
+}
+
+output "edge_internal_domain" {
+  description = "The internal routes' zone: internal.<edge_domain>. The internal route hostname is <host>.<edge_internal_domain>."
+  value       = trimsuffix(google_dns_managed_zone.private.dns_name, ".")
+}
+
+output "edge_external_address_name" {
+  description = "Name of the global static IP for the external Gateway: its spec.addresses entry is {type: NamedAddress, value: <this>}."
+  value       = google_compute_global_address.edge_external.name
+}
+
+output "edge_external_address" {
+  description = "The external Gateway's static IPv4. Only known after apply. What *.<edge_domain> resolves to."
+  value       = google_compute_global_address.edge_external.address
+}
+
+output "edge_internal_address_name" {
+  description = "Name of the regional internal static IP for the internal Gateway: its spec.addresses entry is {type: NamedAddress, value: <this>}."
+  value       = google_compute_address.edge_internal.name
+}
+
+output "edge_internal_address" {
+  description = "The internal Gateway's static IP, from the cluster subnet. Only known after apply. What *.internal.<edge_domain> resolves to inside the VPC."
+  value       = google_compute_address.edge_internal.address
+}
+
+output "edge_proxy_only_subnet_name" {
+  description = "Name of the proxy-only subnet gke-l7-rilb needs (purpose REGIONAL_MANAGED_PROXY, role ACTIVE)."
+  value       = google_compute_subnetwork.proxy_only.name
+}
+
+output "edge_proxy_only_cidr" {
+  description = "Range of the proxy-only subnet."
+  value       = google_compute_subnetwork.proxy_only.ip_cidr_range
+}
+
+output "edge_certificate_map_name" {
+  description = "Certificate Manager map for the external Gateway: the annotation networking.gke.io/certmap: <this>."
+  value       = google_certificate_manager_certificate_map.edge_external.name
+}
+
+output "edge_certificate_name" {
+  description = "The Google-managed wildcard certificate in the map. Its state stays PROVISIONING until the zone is delegated."
+  value       = google_certificate_manager_certificate.edge.name
+}
+
+output "edge_cloud_armor_policy_name" {
+  description = "Cloud Armor policy the rendered GCPBackendPolicy names in spec.default.securityPolicy."
+  value       = google_compute_security_policy.edge_external.name
+}
+
+output "edge_restart_alert_policy_name" {
+  description = "Resource name of C-12's alerting policy (projects/<p>/alertPolicies/<id>)."
+  value       = google_monitoring_alert_policy.container_restarts.name
+}

@@ -176,6 +176,40 @@ resource "google_container_cluster" "primary" {
     channel = "REGULAR"
   }
 
+  # M3b crossings, layer 2's three (ADR-0021 §12; rides the rebuild, not a
+  # standalone apply). Provider arguments checked against the google
+  # provider's google_container_cluster docs at the version this layer's lock
+  # file pins (7.42.0), 2026-10-27: datapath_provider, gateway_api_config
+  # {channel} and enable_fqdn_network_policy all exist.
+  #
+  # DATAPATH. ADVANCED_DATAPATH is Dataplane V2: Cilium-based, and the thing
+  # that makes a NetworkPolicy enforced at all (C-34's default-deny would be
+  # inert on the legacy datapath). It is set at creation and not changed in
+  # place: the provider marks it ForceNew, which is harmless on a layer that is
+  # rebuilt anyway. Do NOT add a network_policy block: with Dataplane V2 the
+  # enforcement is built in, and GKE rejects enabling the Calico add-on
+  # beside it.
+  datapath_provider = "ADVANCED_DATAPATH"
+
+  # GATEWAY API. CHANNEL_STANDARD is the only value GKE's Gateway supports
+  # ("GKE Gateway supports only the Standard release channel", GKE "Deploying
+  # Gateways", read 2026-10-27). This installs the Gateway API CRDs and
+  # GKE's gateway controller; platform-config's `edge` Application then
+  # creates the Gateways (ADR-0021 §4). The HttpLoadBalancing add-on that page
+  # also requires is on by default here and is not disabled. [I: first
+  # Gateway to confirm]
+  gateway_api_config {
+    channel = "CHANNEL_STANDARD"
+  }
+
+  # FQDN NETWORK POLICY (C-14). Per ADR-0021 §13's primary source (GKE "FQDN
+  # network policies", read 2026-10-27): requires Dataplane V2 and kube-dns or
+  # Cloud DNS (this cluster runs kube-dns, the default), states no edition
+  # requirement, and a Standard cluster enables it at creation. It adds the
+  # networking.gke.io/v1alpha1 FQDNNetworkPolicy kind, which platform-config
+  # alone writes (tenants are blacklisted from networking.gke.io/*, §9).
+  enable_fqdn_network_policy = true
+
   # Teardown between working sessions is the cost-control move for this
   # layer (see README) — deletion_protection = true (the provider default)
   # would block exactly that. Unchanged by the corp-real posture work above:
