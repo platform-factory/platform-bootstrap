@@ -68,6 +68,13 @@
 # delete), and teaching it to would turn an evening teardown into a delete
 # storm. Deleting a database for real is a human act with a runbook.
 #
+# From M3 on, `down` first drains what Gateways made. A cluster destroy tells
+# nobody to clean up: the forwarding rules would stay on layer 1's reserved
+# addresses, which the next cluster's Gateways need, and the NEGs would stay
+# for good. So `down` removes the Gateways while the cluster can still act on
+# it, waits until the cloud shows nothing left, and refuses to destroy if it
+# does not. None of this is durable and all of it returns from main on `up`.
+#
 # Usage:
 #   ./scripts/cycle.sh down            # destroy 3-argocd, then 2-cluster
 #   ./scripts/cycle.sh up              # apply 2-cluster, then 3-argocd, verify
@@ -147,6 +154,8 @@
 #                        and reads as a C-07(c) failure. A tenant's FIRST
 #                        provision needs no flag — a name this file has never
 #                        seen is counted as `new`, not `recreated`.
+#   EDGE_DRAIN_TIMEOUT_SECONDS (default: 900) — how long `down` waits for the
+#                        Gateways' load balancers and NEGs to leave the cloud.
 #   SYSTEMS_REPO (default: platform-factory/systems) — the GitHub repository
 #                        whose tenants/ `up` counts, through GitHub's public
 #                        API, to know how many tenants to wait for. If the
@@ -166,6 +175,7 @@ REGION="${REGION:-us-central1}"
 SYSTEM_LABEL="${SYSTEM_LABEL:-system}"
 SYNC_TIMEOUT_SECONDS="${SYNC_TIMEOUT_SECONDS:-2400}"
 EXPECT_FRESH="${EXPECT_FRESH:-0}"
+EDGE_DRAIN_TIMEOUT_SECONDS="${EDGE_DRAIN_TIMEOUT_SECONDS:-900}"
 SYSTEMS_REPO="${SYSTEMS_REPO:-platform-factory/systems}"
 
 # The only two layers this script is allowed to name. Anything else is a bug
@@ -825,11 +835,97 @@ verify_up() {
   done
 }
 
+# The names, among forwarding rules and NEGs, that only GKE's Gateway and NEG
+# controllers make. Layer 1 names neither kind, so anything here came from the
+# cluster that is about to go.
+gateway_made_names() {
+  grep -E '^(gkegw1-|k8s1-)' || true
+}
+
+# gcloud's aggregated lists exit 0 when a request fails, with only a warning on
+# stderr ("Some requests did not succeed"), so the exit code alone cannot tell a
+# failed read from an empty one.
+cloud_names_of() {
+  local out rc=0 err
+  err="$(mktemp)"
+  out="$(gcloud compute "$1" list --project "$PROJECT_ID" --format="value(name)" 2>"$err")" || rc=$?
+  grep -q 'did not succeed' "$err" && rc=1
+  rm -f "$err"
+  (( rc == 0 )) || return 1
+  printf '%s\n' "$out"
+}
+
+edge_leftovers() {
+  local rules negs
+  rules="$(cloud_names_of forwarding-rules)" || return 1
+  negs="$(cloud_names_of network-endpoint-groups)" || return 1
+  printf '%s\n%s\n' "$rules" "$negs" | gateway_made_names | sort -u
+}
+
+# Services the NEG controller has made NEGs for, as namespace/name.
+services_with_negs() {
+  kubectl get services --all-namespaces -o go-template='{{range .items}}{{$s := .}}{{with .metadata.annotations}}{{if index . "cloud.google.com/neg-status"}}{{$s.metadata.namespace}}/{{$s.metadata.name}}{{"\n"}}{{end}}{{end}}{{end}}'
+}
+
+# Why each step, in order. Argo CD would put a deleted Gateway back, so the root
+# and `edge` stop syncing, and the ApplicationSet that generates the route
+# Applications stops. Deleting a route Application lets Argo CD's own controller
+# prune the HTTPRoute, the identity Kyverno's delete rule allows; this script
+# does not get around that rule. The NEGs outlive the Gateways for as long as
+# GKE's annotation stays on the Service, so it comes off last.
+drain_edge() {
+  local cycle_n="$1" start cluster="" location="" svc left apps
+  start=$SECONDS
+  log "EDGE — removing what Gateways made, while the cluster can still do it"
+
+  read -r cluster location < <(gcloud container clusters list --project "$PROJECT_ID" \
+    --format="value(name,location)" --limit=1) || true
+  if [[ -n "$cluster" ]] && gcloud container clusters get-credentials "$cluster" \
+      --location "$location" --project "$PROJECT_ID" --dns-endpoint >/dev/null 2>&1 \
+      && kubectl get crd gateways.gateway.networking.k8s.io >/dev/null 2>&1; then
+    kubectl -n "$ARGOCD_NS" patch application root --type=merge \
+      -p '{"spec":{"syncPolicy":{"automated":null}}}' || warn "root: auto-sync not changed"
+    kubectl -n "$ARGOCD_NS" scale deployment argo-cd-argocd-applicationset-controller --replicas=0 \
+      || warn "the ApplicationSet controller was not scaled down"
+    kubectl -n "$ARGOCD_NS" patch application edge --type=merge \
+      -p '{"spec":{"syncPolicy":{"automated":null}}}' || warn "edge: auto-sync not changed"
+    apps="$(kubectl -n "$ARGOCD_NS" get applications -o name | grep '/edge-' || true)"
+    if [[ -n "$apps" ]]; then
+      # shellcheck disable=SC2086 # one word per Application
+      kubectl -n "$ARGOCD_NS" delete $apps --timeout=300s || warn "a route Application did not delete"
+    fi
+    kubectl delete gateways.gateway.networking.k8s.io --all --all-namespaces --timeout=300s \
+      || warn "a Gateway did not delete"
+    for svc in $(services_with_negs); do
+      kubectl -n "${svc%%/*}" annotate service "${svc##*/}" cloud.google.com/neg- \
+        || warn "${svc}: NEG annotation not removed"
+    done
+  else
+    warn "no cluster reached with the Gateway API: reading the cloud only"
+  fi
+
+  while :; do
+    # A listing that fails is not a listing that came back empty.
+    left="$(edge_leftovers)" || {
+      record "$cycle_n" "down" "edge-drain" "$(( SECONDS - start ))" 1 "could not read the cloud"
+      die "could not list forwarding rules and NEGs in ${PROJECT_ID}"
+    }
+    [[ -z "$left" ]] && break
+    if (( SECONDS - start >= EDGE_DRAIN_TIMEOUT_SECONDS )); then
+      record "$cycle_n" "down" "edge-drain" "$(( SECONDS - start ))" 1 "left: ${left//$'\n'/ }"
+      die "Gateway-made resources are still in the cloud, and destroying the cluster would orphan them: ${left//$'\n'/ }"
+    fi
+    sleep 10
+  done
+  record "$cycle_n" "down" "edge-drain" "$(( SECONDS - start ))" 0
+}
+
 do_down() {
   local cycle_n="${1:-0}"
   log "DOWN — destroying disposable layers in reverse order"
   local start
   start=$SECONDS
+  drain_edge "$cycle_n"
   run_layer "$cycle_n" "down" "3-argocd" "destroy"
   run_layer "$cycle_n" "down" "2-cluster" "destroy"
   record "$cycle_n" "down" "TOTAL" "$(( SECONDS - start ))" 0
