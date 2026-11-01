@@ -113,6 +113,18 @@ check "two .yaml files; a .yml file and a folder do not count" \
   "$(count_tenant_names <<< "$listing")" "2"
 check "an empty listing counts zero" "$(count_tenant_names <<< "")" "0"
 
+# What `down` must clear before it destroys a cluster, from names as seen on
+# 2026-11-01. Layer 1's own resources are not among them.
+cloud_names="gkegw1-wa6z-edge-external-atrxe739nyxc
+k8s1-baed3322-svc-hello-svc-hello-80-c41c9caa
+platform-factory-ref-nat
+edge-external"
+check "a Gateway's rule and a NEG count; layer 1's names do not" \
+  "$(gateway_made_names <<< "$cloud_names")" \
+  "gkegw1-wa6z-edge-external-atrxe739nyxc
+k8s1-baed3322-svc-hello-svc-hello-80-c41c9caa"
+check "nothing Gateway-made leaves nothing" "$(gateway_made_names <<< "edge-external")" ""
+
 echo
 if (( failures > 0 )); then
   echo "${failures} check(s) failed."

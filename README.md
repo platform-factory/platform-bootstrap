@@ -589,6 +589,14 @@ things the manual version can't:
    health in 1.8, so a root-only check can pass while Crossplane underneath
    it is still failing.
 
+**What changed for M3.** `down` first removes what Gateways made, because a
+cluster destroy tells nobody to clean up: the forwarding rules would stay on
+layer 1's reserved addresses and the NEGs would stay for good. It stops Argo CD
+putting them back, deletes the route Applications and the Gateways, removes
+GKE's NEG annotation from the Services, and waits up to
+`EDGE_DRAIN_TIMEOUT_SECONDS` for the cloud to show none left. If any remain it
+stops, with the names, before destroying anything.
+
 **What changed for M2b.** The engine swap (ADR-0017) is tested forward to
 Config Connector and back to Crossplane with this one script, because this
 repo is not selected by branch. So every change to it stays additive and reads

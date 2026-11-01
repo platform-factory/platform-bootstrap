@@ -69,3 +69,12 @@ timestamp_utc	cycle	phase	layer	seconds	exit_code	note
 2026-10-29T06:40:32Z	9	down	3-argocd	56	0	
 2026-10-29T06:50:11Z	9	down	2-cluster	578	0	
 2026-10-29T06:50:11Z	9	down	TOTAL	636	0	
+2026-10-31T15:33:28Z	9	up	2-cluster	580	0	
+2026-10-31T15:35:22Z	9	up	3-argocd	113	0	
+2026-10-31T16:15:27Z	9	up	verify	2402	1	timeout; 11/12 ready; 2/2 tenants have Applications; not ready: edge-internal-svc-hello-hello-internal(sync=OutOfSync health=Healthy); root at main (f202c35)
+2026-10-31T16:15:29Z	9	up	durable	2	0	adopted: 4 [cloudsql/svc-hello-main@2026-09-16T16:54:08Z registry/svc-hello@2026-09-16T16:53:10Z registry/svc-ledger@2026-09-16T17:05:14Z registry/svc-onboard@2026-10-19T22:32:45Z], recreated: 0 — partial: taken at verify timeout, platform had not converged
+2026-11-01T05:18:51Z	10	down	3-argocd	46	0	
+2026-11-01T05:27:47Z	10	down	2-cluster	535	0	
+2026-11-01T05:27:47Z	10	down	TOTAL	583	0	
+2026-11-01T05:29:04Z	10	park	svc-hello-main	54	0	activation policy NEVER
+2026-11-01T05:29:04Z	10	park	TOTAL	55	0	parked: 1, failed: 0
