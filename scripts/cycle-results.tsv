@@ -78,3 +78,15 @@ timestamp_utc	cycle	phase	layer	seconds	exit_code	note
 2026-11-01T05:27:47Z	10	down	TOTAL	583	0	
 2026-11-01T05:29:04Z	10	park	svc-hello-main	54	0	activation policy NEVER
 2026-11-01T05:29:04Z	10	park	TOTAL	55	0	parked: 1, failed: 0
+2026-11-03T17:12:32Z	10	up	2-cluster	0	1	not the platform: the operator's working copy had lost layer files to macOS /tmp cleanup; re-cloned and re-run
+2026-11-03T17:24:35Z	10	up	2-cluster	615	0	
+2026-11-03T17:26:21Z	10	up	3-argocd	101	0	
+2026-11-03T18:06:26Z	10	up	verify	2401	1	timeout; 9/11 ready; 2/2 tenants have Applications; not ready: edge(sync=Synced health=Progressing), root(sync=OutOfSync health=Progressing); root at main (abc208e)
+2026-11-03T18:06:28Z	10	up	durable	2	0	adopted: 4 [cloudsql/svc-hello-main@2026-09-16T16:54:08Z registry/svc-hello@2026-09-16T16:53:10Z registry/svc-ledger@2026-09-16T17:05:14Z registry/svc-onboard@2026-10-19T22:32:45Z], recreated: 0 — partial: taken at verify timeout, platform had not converged
+2026-11-03T20:33:05Z	11	down	edge-drain	242	0	
+2026-11-03T20:33:52Z	11	down	3-argocd	46	0	
+2026-11-03T20:43:39Z	11	down	2-cluster	586	0	
+2026-11-03T20:43:39Z	11	down	TOTAL	876	0	
+2026-11-03T20:44:37Z	11	park	svc-ledger-main	56	0	activation policy NEVER
+2026-11-03T20:45:33Z	11	park	svc-hello-main	56	0	activation policy NEVER
+2026-11-03T20:45:33Z	11	park	TOTAL	113	0	parked: 2, failed: 0
